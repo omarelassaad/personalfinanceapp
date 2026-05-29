@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Household Expense Tracker</title>
+  <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body { font-family: system-ui, sans-serif; background: #f8fafc; }
+    .bar { transition: width 0.4s ease; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useCallback, useMemo } = React;
+
+    // ─── Constants ────────────────────────────────────────────────────────────────
+    const TOP_TAGS = ["Common", "Travel", "Adam", "Zayn", "Other"];
+    const SUB_CATS = [
+      "Dining", "Groceries", "Transport", "Insurance",
+      "Recreation", "Shopping", "Accommodation", "Fuel", "Pharmacy", "Other"
+    ];
+
+    const KEYWORD_RULES = [
+      { keywords: ["tim horton","zaatar","zythos","edo ","kfc","shanghai","mongolie","keg ","purdys","kernels","cows","pizza","donair","beach","grill","restaurant","bistro","cafe","sushi","burger","mcdonald","subway","wendy","starbucks"], sub: "Dining" },
+      { keywords: ["costco","safeway","freshco","wal-mart","walmart","save on","save-on","grocery","superstore","whole foods","t&t","loblaws"], sub: "Groceries" },
+      { keywords: ["compass","uber","paybyphone","parking","gs whistler","esso","petro","shell ","chevron","husky","parkplus","mobi","lyft"], sub: "Transport" },
+      { keywords: ["bcaa","insurance","icbc"], sub: "Insurance" },
+      { keywords: ["delta rec","flyoland"," ice ","excellent","rec centre","recreation","spa","yoga","gym","fitness","cinema","theatre","movie"], sub: "Recreation" },
+      { keywords: ["lodge","hotel","inn","airbnb","marriott","hilton","westin","hyatt","fairmont","resort"], sub: "Accommodation" },
+      { keywords: ["rexall","shoppers","pharmacy","pharmasave","london drugs","drug mart"], sub: "Pharmacy" },
+      { keywords: ["samsonite","amazon","best buy","apple ","microsoft","sport chek","winners","homesense","ikea","h&m","zara","gap ","old navy","lululemon"], sub: "Shopping" },
+      { keywords: ["gas","fuel","petrol","ultramar"], sub: "Fuel" },
+    ];
+
+    function autoCategory(description) {
+      const lower = (description || "").toLowerCase();
+      for (const rule of KEYWORD_RULES) {
+        if (rule.keywords.some(k => lower.includes(k))) {
+          return rule.sub;
+        }
+      }
+      return "Other";
+    }
+
+    const STORAGE_KEY = "expense-tracker-v1";
+
+    // ─── CSV Parsing ──────────────────────────────────────────────────────────────
+    function parseCSV(text) {
+      const lines = text.trim().split(/\r?\n/);
+      if (lines.length < 2) return [];
+
+      // Detect delimiter
+      const delim = lines[0].includes("\t") ? "\t" : ",";
+
+      const splitLine = (line) => {
+        const result = [];
+        let cur = "";
+        let inQuote = false;
+        for (let i = 0; i < line.length; i++) {
+          const ch = line[i];
+          if (ch === '"') { inQuote = !inQuote; continue; }
+          if (ch === delim && !inQuote) { result.push(cur.trim()); cur = ""; continue; }
+          cur += ch;
+        }
+        result.push(cur.trim());
+        return result;
+      };
+
+      const headers = splitLine(lines[0]).map(h => h.toLowerCase().replace(/\s+/g, ""));
+      const rows = [];
+
+      for (let i = 1; i < lines.length; i++) {
+        if (!lines[i].trim()) continue;
+        const cols = splitLine(lines[i]);
+        const row = {};
+        headers.forEach((h, idx) => { row[h] = cols[idx] || ""; });
+
+        // Flexible header mapping
+        const date = row["date"] || row["transactiondate"] || row["trans.date"] || "";
+        const desc = row["description"] || row["merchant"] || row["name"] || row["details"] || "";
+        const amtRaw = row["amount"] || row["debit"] || row["credit"] || row["transactionamount"] || "";
+        const amt = parseFloat(amtRaw.replace(/[$,\s]/g, "")) || 0;
+        if (!desc && !amt) continue;
+
+        rows.push({
+          id: `${i}-${date}-${desc}`,
+          date,
+          description: desc,
+          amount: Math.abs(amt),
+          tag: "Common",
+          sub: autoCategory(desc),
+        });
+      }
+      return rows;
+    }
+
+    // ─── Colour helpers ───────────────────────────────────────────────────────────
+    const TAG_COLORS = {
+      Common: "bg-blue-100 text-blue-800",
+      Travel: "bg-purple-100 text-purple-800",
+      Adam: "bg-green-100 text-green-800",
+      Zayn: "bg-amber-100 text-amber-800",
+      Other: "bg-gray-100 text-gray-700",
+    };
+    const BAR_COLORS = {
+      Common: "bg-blue-500",
+      Travel: "bg-purple-500",
+      Adam: "bg-green-500",
+      Zayn: "bg-amber-500",
+      Other: "bg-gray-400",
+    };
+    const SUB_BAR_COLORS = [
+      "bg-rose-400","bg-orange-400","bg-amber-400","bg-lime-400",
+      "bg-emerald-400","bg-cyan-400","bg-sky-400","bg-violet-400",
+      "bg-pink-400","bg-gray-400",
+    ];
+
+    // ─── Components ───────────────────────────────────────────────────────────────
+
+    function BarRow({ label, amount, total, color, extra }) {
+      const pct = total > 0 ? (amount / total) * 100 : 0;
+      return (
+        <div className="mb-2">
+          <div className="flex justify-between text-sm mb-0.5">
+            <span className="font-medium text-gray-700">{label}{extra && <span className="text-gray-400 text-xs ml-1">{extra}</span>}</span>
+            <span className="text-gray-800">${amount.toFixed(2)} <span className="text-gray-400 text-xs">({pct.toFixed(1)}%)</span></span>
+          </div>
+          <div className="h-3 bg-gray-100 rounded-full overflow-hidden">
+            <div className={`h-full bar ${color} rounded-full`} style={{ width: `${pct}%` }} />
+          </div>
+        </div>
+      );
+    }
+
+    function Dashboard({ rows }) {
+      const total = useMemo(() => rows.reduce((s, r) => s + r.amount, 0), [rows]);
+
+      const byTag = useMemo(() => {
+        const m = {};
+        TOP_TAGS.forEach(t => { m[t] = 0; });
+        rows.forEach(r => { m[r.tag] = (m[r.tag] || 0) + r.amount; });
+        return m;
+      }, [rows]);
+
+      const commonRows = useMemo(() => rows.filter(r => r.tag === "Common"), [rows]);
+      const commonTotal = byTag["Common"] || 0;
+
+      const bySub = useMemo(() => {
+        const m = {};
+        SUB_CATS.forEach(s => { m[s] = 0; });
+        commonRows.forEach(r => { m[r.sub] = (m[r.sub] || 0) + r.amount; });
+        return m;
+      }, [commonRows]);
+
+      const subEntries = SUB_CATS
+        .map((s, i) => ({ label: s, amount: bySub[s] || 0, color: SUB_BAR_COLORS[i] }))
+        .filter(e => e.amount > 0)
+        .sort((a, b) => b.amount - a.amount);
+
+      const perPerson = commonTotal / 2;
+
+      if (rows.length === 0) return null;
+
+      return (
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
+          {/* Total + tag breakdown */}
+          <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-5 lg:col-span-2">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-lg font-semibold text-gray-800">Spending Summary</h2>
+              <span className="text-2xl font-bold text-gray-900">${total.toFixed(2)}</span>
+            </div>
+            {TOP_TAGS.filter(t => byTag[t] > 0).map(t => (
+              <BarRow key={t} label={t} amount={byTag[t]} total={total} color={BAR_COLORS[t]} />
+            ))}
+          </div>
+
+          {/* Split calculator */}
+          <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-5 flex flex-col gap-3">
+            <h2 className="text-lg font-semibold text-gray-800">50/50 Split</h2>
+            <div className="flex-1 flex flex-col gap-2 justify-center">
+              <div className="bg-blue-50 rounded-xl p-3 text-center">
+                <div className="text-xs text-blue-500 font-medium mb-0.5">Common Total</div>
+                <div className="text-xl font-bold text-blue-700">${commonTotal.toFixed(2)}</div>
+              </div>
+              <div className="text-center text-gray-400 text-sm">÷ 2</div>
+              <div className="grid grid-cols-2 gap-2">
+                {["Partner 1", "Partner 2"].map(p => (
+                  <div key={p} className="bg-gray-50 rounded-xl p-3 text-center">
+                    <div className="text-xs text-gray-500 mb-0.5">{p}</div>
+                    <div className="text-lg font-bold text-gray-800">${perPerson.toFixed(2)}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* Common by sub-cat */}
+          {subEntries.length > 0 && (
+            <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-5 lg:col-span-3">
+              <h2 className="text-lg font-semibold text-gray-800 mb-4">Common — by Sub-Category</h2>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-8">
+                {subEntries.map(e => (
+                  <BarRow key={e.label} label={e.label} amount={e.amount} total={commonTotal} color={e.color} />
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    function TransactionRow({ row, onChange }) {
+      return (
+        <tr className="border-b border-gray-50 hover:bg-gray-50 transition-colors">
+          <td className="py-2.5 px-3 text-sm text-gray-500 whitespace-nowrap">{row.date}</td>
+          <td className="py-2.5 px-3 text-sm text-gray-800 max-w-xs truncate" title={row.description}>{row.description}</td>
+          <td className="py-2.5 px-3 text-sm font-medium text-gray-900 text-right whitespace-nowrap">${row.amount.toFixed(2)}</td>
+          <td className="py-2.5 px-3">
+            <select
+              value={row.tag}
+              onChange={e => onChange({ ...row, tag: e.target.value })}
+              className={`text-xs font-medium rounded-lg px-2 py-1 border-0 cursor-pointer focus:ring-2 focus:ring-blue-300 ${TAG_COLORS[row.tag] || TAG_COLORS["Other"]}`}
+            >
+              {TOP_TAGS.map(t => <option key={t} value={t}>{t}</option>)}
+            </select>
+          </td>
+          <td className="py-2.5 px-3">
+            <select
+              value={row.sub}
+              onChange={e => onChange({ ...row, sub: e.target.value })}
+              className="text-xs rounded-lg px-2 py-1 bg-gray-100 text-gray-700 border-0 cursor-pointer focus:ring-2 focus:ring-blue-300"
+            >
+              {SUB_CATS.map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </td>
+        </tr>
+      );
+    }
+
+    // ─── Main App ─────────────────────────────────────────────────────────────────
+    function App() {
+      const [rows, setRows] = useState(() => {
+        try { return JSON.parse(localStorage.getItem(STORAGE_KEY)) || []; }
+        catch { return []; }
+      });
+      const [filter, setFilter] = useState("");
+      const [tagFilter, setTagFilter] = useState("All");
+      const [dragOver, setDragOver] = useState(false);
+      const [fileName, setFileName] = useState("");
+
+      // Persist on change
+      useEffect(() => {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(rows));
+      }, [rows]);
+
+      const handleFile = useCallback((file) => {
+        if (!file) return;
+        setFileName(file.name);
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          const parsed = parseCSV(e.target.result);
+          if (parsed.length === 0) {
+            alert("No transactions found. Make sure the CSV has Date, Description, and Amount columns.");
+            return;
+          }
+          setRows(prev => {
+            // Merge: keep existing categorisations for matching ids, append new
+            const existingMap = {};
+            prev.forEach(r => { existingMap[r.id] = r; });
+            return parsed.map(r => existingMap[r.id] || r);
+          });
+        };
+        reader.readAsText(file);
+      }, []);
+
+      const handleDrop = (e) => {
+        e.preventDefault();
+        setDragOver(false);
+        handleFile(e.dataTransfer.files[0]);
+      };
+
+      const updateRow = useCallback((updated) => {
+        setRows(prev => prev.map(r => r.id === updated.id ? updated : r));
+      }, []);
+
+      const exportCSV = () => {
+        const header = "Date,Description,Amount,Tag,SubCategory\n";
+        const body = rows.map(r =>
+          `"${r.date}","${r.description.replace(/"/g,'""')}",${r.amount},"${r.tag}","${r.sub}"`
+        ).join("\n");
+        const blob = new Blob([header + body], { type: "text/csv" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url; a.download = "categorized-expenses.csv"; a.click();
+        URL.revokeObjectURL(url);
+      };
+
+      const clearAll = () => {
+        if (confirm("Clear all transactions? This cannot be undone.")) {
+          setRows([]); setFileName("");
+        }
+      };
+
+      const filtered = useMemo(() => {
+        let r = rows;
+        if (tagFilter !== "All") r = r.filter(x => x.tag === tagFilter);
+        if (filter.trim()) {
+          const q = filter.toLowerCase();
+          r = r.filter(x => x.description.toLowerCase().includes(q) || x.date.includes(q));
+        }
+        return r;
+      }, [rows, filter, tagFilter]);
+
+      return (
+        <div className="min-h-screen p-4 md:p-8 max-w-7xl mx-auto">
+          {/* Header */}
+          <div className="mb-6 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div>
+              <h1 className="text-2xl font-bold text-gray-900">Household Expense Tracker</h1>
+              <p className="text-sm text-gray-500 mt-0.5">Neo World Elite Mastercard · {rows.length} transactions</p>
+            </div>
+            <div className="flex gap-2">
+              {rows.length > 0 && (
+                <>
+                  <button onClick={exportCSV} className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-xl hover:bg-blue-700 transition-colors">
+                    Export CSV
+                  </button>
+                  <button onClick={clearAll} className="px-4 py-2 bg-gray-100 text-gray-600 text-sm font-medium rounded-xl hover:bg-gray-200 transition-colors">
+                    Clear
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+
+          {/* Upload zone */}
+          <div
+            onDragOver={e => { e.preventDefault(); setDragOver(true); }}
+            onDragLeave={() => setDragOver(false)}
+            onDrop={handleDrop}
+            className={`mb-6 border-2 border-dashed rounded-2xl p-8 text-center transition-colors cursor-pointer ${dragOver ? "border-blue-400 bg-blue-50" : "border-gray-200 bg-white hover:border-blue-300"}`}
+            onClick={() => document.getElementById("csvInput").click()}
+          >
+            <input
+              id="csvInput" type="file" accept=".csv,.txt" className="hidden"
+              onChange={e => handleFile(e.target.files[0])}
+            />
+            <div className="text-4xl mb-2">📂</div>
+            {fileName
+              ? <p className="text-gray-700 font-medium">{fileName} loaded</p>
+              : <p className="text-gray-500">Drop your CSV here, or click to browse</p>
+            }
+            <p className="text-xs text-gray-400 mt-1">Expected columns: Date, Description, Amount</p>
+          </div>
+
+          {rows.length > 0 && (
+            <>
+              <Dashboard rows={rows} />
+
+              {/* Filter bar */}
+              <div className="flex flex-col sm:flex-row gap-3 mb-4">
+                <input
+                  type="text"
+                  placeholder="Search transactions…"
+                  value={filter}
+                  onChange={e => setFilter(e.target.value)}
+                  className="flex-1 px-4 py-2 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-300"
+                />
+                <div className="flex gap-1.5">
+                  {["All", ...TOP_TAGS].map(t => (
+                    <button
+                      key={t}
+                      onClick={() => setTagFilter(t)}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${tagFilter === t ? "bg-blue-600 text-white" : "bg-gray-100 text-gray-600 hover:bg-gray-200"}`}
+                    >
+                      {t}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Table */}
+              <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+                <div className="overflow-x-auto">
+                  <table className="w-full">
+                    <thead>
+                      <tr className="bg-gray-50 border-b border-gray-100">
+                        <th className="py-3 px-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Date</th>
+                        <th className="py-3 px-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Description</th>
+                        <th className="py-3 px-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">Amount</th>
+                        <th className="py-3 px-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Tag</th>
+                        <th className="py-3 px-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Sub-Category</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filtered.length === 0
+                        ? <tr><td colSpan={5} className="py-10 text-center text-gray-400 text-sm">No transactions match your filter.</td></tr>
+                        : filtered.map(r => <TransactionRow key={r.id} row={r} onChange={updateRow} />)
+                      }
+                    </tbody>
+                  </table>
+                </div>
+                {filtered.length > 0 && (
+                  <div className="px-3 py-2 border-t border-gray-50 text-xs text-gray-400 text-right">
+                    Showing {filtered.length} of {rows.length} transactions ·{" "}
+                    Total: <span className="font-semibold text-gray-600">${filtered.reduce((s,r)=>s+r.amount,0).toFixed(2)}</span>
+                  </div>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+  </script>
+</body>
+</html>
