@@ -17,11 +17,11 @@
   <div id="root"></div>
 
   <script type="text/babel">
-    const { useState, useEffect, useCallback, useMemo } = React;
+    const { useState, useEffect, useCallback, useMemo, useRef } = React;
 
-    // ─── Constants ────────────────────────────────────────────────────────────────
-    const TOP_TAGS = ["Common", "Travel", "Adam", "Zayn", "Other"];
-    const SUB_CATS = [
+    // ─── Defaults ─────────────────────────────────────────────────────────────────
+    const DEFAULT_TAGS = ["Common", "Travel", "Adam", "Zayn", "Other"];
+    const DEFAULT_SUBS = [
       "Dining", "Groceries", "Transport", "Insurance",
       "Recreation", "Shopping", "Accommodation", "Fuel", "Pharmacy", "Other"
     ];
@@ -38,97 +38,209 @@
       { keywords: ["gas","fuel","petrol","ultramar"], sub: "Fuel" },
     ];
 
-    function autoCategory(description) {
+    function autoCategory(description, subCats) {
       const lower = (description || "").toLowerCase();
       for (const rule of KEYWORD_RULES) {
         if (rule.keywords.some(k => lower.includes(k))) {
-          return rule.sub;
+          return subCats.includes(rule.sub) ? rule.sub : (subCats[subCats.length - 1] || "Other");
         }
       }
-      return "Other";
+      return subCats[subCats.length - 1] || "Other";
     }
 
     const STORAGE_KEY = "expense-tracker-v1";
+    const SETTINGS_KEY = "expense-tracker-settings-v1";
+
+    // ─── Color palettes ───────────────────────────────────────────────────────────
+    const TAG_COLOR_PALETTE = [
+      "bg-blue-100 text-blue-800",
+      "bg-purple-100 text-purple-800",
+      "bg-green-100 text-green-800",
+      "bg-amber-100 text-amber-800",
+      "bg-rose-100 text-rose-800",
+      "bg-cyan-100 text-cyan-800",
+      "bg-indigo-100 text-indigo-800",
+      "bg-orange-100 text-orange-800",
+      "bg-gray-100 text-gray-700",
+    ];
+    const BAR_COLOR_PALETTE = [
+      "bg-blue-500","bg-purple-500","bg-green-500","bg-amber-500",
+      "bg-rose-500","bg-cyan-500","bg-indigo-500","bg-orange-500","bg-gray-400",
+    ];
+    const SUB_BAR_COLORS = [
+      "bg-rose-400","bg-orange-400","bg-amber-400","bg-lime-400",
+      "bg-emerald-400","bg-cyan-400","bg-sky-400","bg-violet-400",
+      "bg-pink-400","bg-fuchsia-400","bg-red-400","bg-teal-400","bg-gray-400",
+    ];
 
     // ─── CSV Parsing ──────────────────────────────────────────────────────────────
-    function parseCSV(text) {
+    function parseCSV(text, tags, subCats) {
       const lines = text.trim().split(/\r?\n/);
       if (lines.length < 2) return [];
-
-      // Detect delimiter
       const delim = lines[0].includes("\t") ? "\t" : ",";
-
       const splitLine = (line) => {
-        const result = [];
-        let cur = "";
-        let inQuote = false;
+        const result = []; let cur = ""; let inQuote = false;
         for (let i = 0; i < line.length; i++) {
           const ch = line[i];
           if (ch === '"') { inQuote = !inQuote; continue; }
           if (ch === delim && !inQuote) { result.push(cur.trim()); cur = ""; continue; }
           cur += ch;
         }
-        result.push(cur.trim());
-        return result;
+        result.push(cur.trim()); return result;
       };
-
       const headers = splitLine(lines[0]).map(h => h.toLowerCase().replace(/\s+/g, ""));
       const rows = [];
-
       for (let i = 1; i < lines.length; i++) {
         if (!lines[i].trim()) continue;
         const cols = splitLine(lines[i]);
         const row = {};
         headers.forEach((h, idx) => { row[h] = cols[idx] || ""; });
-
-        // Flexible header mapping
         const date = row["date"] || row["transactiondate"] || row["trans.date"] || "";
         const desc = row["description"] || row["merchant"] || row["name"] || row["details"] || "";
         const amtRaw = row["amount"] || row["debit"] || row["credit"] || row["transactionamount"] || "";
         const amt = parseFloat(amtRaw.replace(/[$,\s]/g, "")) || 0;
         if (!desc && !amt) continue;
-
         rows.push({
           id: `${i}-${date}-${desc}`,
-          date,
-          description: desc,
-          amount: Math.abs(amt),
-          tag: "Common",
-          sub: autoCategory(desc),
+          date, description: desc, amount: Math.abs(amt),
+          tag: tags[0] || "Common",
+          sub: autoCategory(desc, subCats),
         });
       }
       return rows;
     }
 
-    // ─── Colour helpers ───────────────────────────────────────────────────────────
-    const TAG_COLORS = {
-      Common: "bg-blue-100 text-blue-800",
-      Travel: "bg-purple-100 text-purple-800",
-      Adam: "bg-green-100 text-green-800",
-      Zayn: "bg-amber-100 text-amber-800",
-      Other: "bg-gray-100 text-gray-700",
-    };
-    const BAR_COLORS = {
-      Common: "bg-blue-500",
-      Travel: "bg-purple-500",
-      Adam: "bg-green-500",
-      Zayn: "bg-amber-500",
-      Other: "bg-gray-400",
-    };
-    const SUB_BAR_COLORS = [
-      "bg-rose-400","bg-orange-400","bg-amber-400","bg-lime-400",
-      "bg-emerald-400","bg-cyan-400","bg-sky-400","bg-violet-400",
-      "bg-pink-400","bg-gray-400",
-    ];
+    // ─── Manage Categories Modal ──────────────────────────────────────────────────
+    function ManageModal({ tags, subCats, onClose, onSave }) {
+      const [localTags, setLocalTags] = useState([...tags]);
+      const [localSubs, setLocalSubs] = useState([...subCats]);
+      const [newTag, setNewTag] = useState("");
+      const [newSub, setNewSub] = useState("");
+      const tagInputRef = useRef(null);
+      const subInputRef = useRef(null);
 
-    // ─── Components ───────────────────────────────────────────────────────────────
+      const addTag = () => {
+        const v = newTag.trim();
+        if (!v || localTags.includes(v)) return;
+        setLocalTags(prev => [...prev, v]);
+        setNewTag("");
+        tagInputRef.current?.focus();
+      };
 
-    function BarRow({ label, amount, total, color, extra }) {
+      const addSub = () => {
+        const v = newSub.trim();
+        if (!v || localSubs.includes(v)) return;
+        setLocalSubs(prev => [...prev, v]);
+        setNewSub("");
+        subInputRef.current?.focus();
+      };
+
+      const removeTag = (t) => {
+        if (localTags.length <= 1) return;
+        setLocalTags(prev => prev.filter(x => x !== t));
+      };
+
+      const removeSub = (s) => {
+        if (localSubs.length <= 1) return;
+        setLocalSubs(prev => prev.filter(x => x !== s));
+      };
+
+      return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onClose} />
+          <div className="relative bg-white rounded-2xl shadow-xl w-full max-w-lg max-h-[90vh] flex flex-col">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+              <h2 className="text-lg font-semibold text-gray-900">Manage Categories</h2>
+              <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl leading-none">&times;</button>
+            </div>
+
+            <div className="overflow-y-auto flex-1 px-6 py-5 space-y-6">
+              {/* Tags */}
+              <div>
+                <h3 className="text-sm font-semibold text-gray-700 mb-2">Top-level Tags</h3>
+                <div className="flex flex-wrap gap-2 mb-3">
+                  {localTags.map((t, i) => (
+                    <span key={t} className={`inline-flex items-center gap-1 px-3 py-1 rounded-full text-xs font-medium ${TAG_COLOR_PALETTE[i % TAG_COLOR_PALETTE.length]}`}>
+                      {t}
+                      {localTags.length > 1 && (
+                        <button onClick={() => removeTag(t)} className="ml-0.5 hover:opacity-60 font-bold leading-none">&times;</button>
+                      )}
+                    </span>
+                  ))}
+                </div>
+                <div className="flex gap-2">
+                  <input
+                    ref={tagInputRef}
+                    type="text"
+                    value={newTag}
+                    onChange={e => setNewTag(e.target.value)}
+                    onKeyDown={e => e.key === "Enter" && addTag()}
+                    placeholder="New tag name…"
+                    className="flex-1 text-sm px-3 py-2 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-300"
+                  />
+                  <button onClick={addTag} className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-xl hover:bg-blue-700 transition-colors">
+                    Add
+                  </button>
+                </div>
+              </div>
+
+              {/* Sub-categories */}
+              <div>
+                <h3 className="text-sm font-semibold text-gray-700 mb-2">Sub-Categories</h3>
+                <div className="flex flex-wrap gap-2 mb-3">
+                  {localSubs.map((s, i) => (
+                    <span key={s} className="inline-flex items-center gap-1 px-3 py-1 rounded-full text-xs font-medium bg-gray-100 text-gray-700">
+                      {s}
+                      {localSubs.length > 1 && (
+                        <button onClick={() => removeSub(s)} className="ml-0.5 hover:opacity-60 font-bold leading-none">&times;</button>
+                      )}
+                    </span>
+                  ))}
+                </div>
+                <div className="flex gap-2">
+                  <input
+                    ref={subInputRef}
+                    type="text"
+                    value={newSub}
+                    onChange={e => setNewSub(e.target.value)}
+                    onKeyDown={e => e.key === "Enter" && addSub()}
+                    placeholder="New sub-category…"
+                    className="flex-1 text-sm px-3 py-2 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-300"
+                  />
+                  <button onClick={addSub} className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-xl hover:bg-blue-700 transition-colors">
+                    Add
+                  </button>
+                </div>
+              </div>
+
+              <p className="text-xs text-gray-400">
+                Removing a tag or sub-category reassigns affected transactions to the first remaining option.
+              </p>
+            </div>
+
+            <div className="flex justify-end gap-2 px-6 py-4 border-t border-gray-100">
+              <button onClick={onClose} className="px-4 py-2 text-sm text-gray-600 bg-gray-100 rounded-xl hover:bg-gray-200 transition-colors">
+                Cancel
+              </button>
+              <button
+                onClick={() => onSave(localTags, localSubs)}
+                className="px-5 py-2 text-sm font-medium text-white bg-blue-600 rounded-xl hover:bg-blue-700 transition-colors"
+              >
+                Save
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // ─── Bar Row ──────────────────────────────────────────────────────────────────
+    function BarRow({ label, amount, total, color }) {
       const pct = total > 0 ? (amount / total) * 100 : 0;
       return (
         <div className="mb-2">
           <div className="flex justify-between text-sm mb-0.5">
-            <span className="font-medium text-gray-700">{label}{extra && <span className="text-gray-400 text-xs ml-1">{extra}</span>}</span>
+            <span className="font-medium text-gray-700">{label}</span>
             <span className="text-gray-800">${amount.toFixed(2)} <span className="text-gray-400 text-xs">({pct.toFixed(1)}%)</span></span>
           </div>
           <div className="h-3 bg-gray-100 rounded-full overflow-hidden">
@@ -138,54 +250,53 @@
       );
     }
 
-    function Dashboard({ rows }) {
+    // ─── Dashboard ────────────────────────────────────────────────────────────────
+    function Dashboard({ rows, tags, subCats }) {
       const total = useMemo(() => rows.reduce((s, r) => s + r.amount, 0), [rows]);
 
       const byTag = useMemo(() => {
         const m = {};
-        TOP_TAGS.forEach(t => { m[t] = 0; });
+        tags.forEach(t => { m[t] = 0; });
         rows.forEach(r => { m[r.tag] = (m[r.tag] || 0) + r.amount; });
         return m;
-      }, [rows]);
+      }, [rows, tags]);
 
-      const commonRows = useMemo(() => rows.filter(r => r.tag === "Common"), [rows]);
-      const commonTotal = byTag["Common"] || 0;
+      const splitTag = tags[0] || "Common";
+      const commonRows = useMemo(() => rows.filter(r => r.tag === splitTag), [rows, splitTag]);
+      const commonTotal = byTag[splitTag] || 0;
 
       const bySub = useMemo(() => {
         const m = {};
-        SUB_CATS.forEach(s => { m[s] = 0; });
+        subCats.forEach(s => { m[s] = 0; });
         commonRows.forEach(r => { m[r.sub] = (m[r.sub] || 0) + r.amount; });
         return m;
-      }, [commonRows]);
+      }, [commonRows, subCats]);
 
-      const subEntries = SUB_CATS
-        .map((s, i) => ({ label: s, amount: bySub[s] || 0, color: SUB_BAR_COLORS[i] }))
+      const subEntries = subCats
+        .map((s, i) => ({ label: s, amount: bySub[s] || 0, color: SUB_BAR_COLORS[i % SUB_BAR_COLORS.length] }))
         .filter(e => e.amount > 0)
         .sort((a, b) => b.amount - a.amount);
 
       const perPerson = commonTotal / 2;
-
       if (rows.length === 0) return null;
 
       return (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
-          {/* Total + tag breakdown */}
           <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-5 lg:col-span-2">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-lg font-semibold text-gray-800">Spending Summary</h2>
               <span className="text-2xl font-bold text-gray-900">${total.toFixed(2)}</span>
             </div>
-            {TOP_TAGS.filter(t => byTag[t] > 0).map(t => (
-              <BarRow key={t} label={t} amount={byTag[t]} total={total} color={BAR_COLORS[t]} />
+            {tags.filter(t => byTag[t] > 0).map((t, i) => (
+              <BarRow key={t} label={t} amount={byTag[t]} total={total} color={BAR_COLOR_PALETTE[i % BAR_COLOR_PALETTE.length]} />
             ))}
           </div>
 
-          {/* Split calculator */}
           <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-5 flex flex-col gap-3">
             <h2 className="text-lg font-semibold text-gray-800">50/50 Split</h2>
             <div className="flex-1 flex flex-col gap-2 justify-center">
               <div className="bg-blue-50 rounded-xl p-3 text-center">
-                <div className="text-xs text-blue-500 font-medium mb-0.5">Common Total</div>
+                <div className="text-xs text-blue-500 font-medium mb-0.5">{splitTag} Total</div>
                 <div className="text-xl font-bold text-blue-700">${commonTotal.toFixed(2)}</div>
               </div>
               <div className="text-center text-gray-400 text-sm">÷ 2</div>
@@ -200,10 +311,9 @@
             </div>
           </div>
 
-          {/* Common by sub-cat */}
           {subEntries.length > 0 && (
             <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-5 lg:col-span-3">
-              <h2 className="text-lg font-semibold text-gray-800 mb-4">Common — by Sub-Category</h2>
+              <h2 className="text-lg font-semibold text-gray-800 mb-4">{splitTag} — by Sub-Category</h2>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-8">
                 {subEntries.map(e => (
                   <BarRow key={e.label} label={e.label} amount={e.amount} total={commonTotal} color={e.color} />
@@ -215,7 +325,10 @@
       );
     }
 
-    function TransactionRow({ row, onChange }) {
+    // ─── Transaction Row ──────────────────────────────────────────────────────────
+    function TransactionRow({ row, onChange, tags, subCats }) {
+      const tagIdx = tags.indexOf(row.tag);
+      const tagColor = TAG_COLOR_PALETTE[tagIdx >= 0 ? tagIdx : TAG_COLOR_PALETTE.length - 1];
       return (
         <tr className="border-b border-gray-50 hover:bg-gray-50 transition-colors">
           <td className="py-2.5 px-3 text-sm text-gray-500 whitespace-nowrap">{row.date}</td>
@@ -223,20 +336,20 @@
           <td className="py-2.5 px-3 text-sm font-medium text-gray-900 text-right whitespace-nowrap">${row.amount.toFixed(2)}</td>
           <td className="py-2.5 px-3">
             <select
-              value={row.tag}
+              value={tags.includes(row.tag) ? row.tag : tags[0]}
               onChange={e => onChange({ ...row, tag: e.target.value })}
-              className={`text-xs font-medium rounded-lg px-2 py-1 border-0 cursor-pointer focus:ring-2 focus:ring-blue-300 ${TAG_COLORS[row.tag] || TAG_COLORS["Other"]}`}
+              className={`text-xs font-medium rounded-lg px-2 py-1 border-0 cursor-pointer focus:ring-2 focus:ring-blue-300 ${tagColor}`}
             >
-              {TOP_TAGS.map(t => <option key={t} value={t}>{t}</option>)}
+              {tags.map(t => <option key={t} value={t}>{t}</option>)}
             </select>
           </td>
           <td className="py-2.5 px-3">
             <select
-              value={row.sub}
+              value={subCats.includes(row.sub) ? row.sub : subCats[0]}
               onChange={e => onChange({ ...row, sub: e.target.value })}
               className="text-xs rounded-lg px-2 py-1 bg-gray-100 text-gray-700 border-0 cursor-pointer focus:ring-2 focus:ring-blue-300"
             >
-              {SUB_CATS.map(s => <option key={s} value={s}>{s}</option>)}
+              {subCats.map(s => <option key={s} value={s}>{s}</option>)}
             </select>
           </td>
         </tr>
@@ -246,48 +359,65 @@
     // ─── Main App ─────────────────────────────────────────────────────────────────
     function App() {
       const [rows, setRows] = useState(() => {
-        try { return JSON.parse(localStorage.getItem(STORAGE_KEY)) || []; }
-        catch { return []; }
+        try { return JSON.parse(localStorage.getItem(STORAGE_KEY)) || []; } catch { return []; }
       });
+
+      const [settings, setSettings] = useState(() => {
+        try {
+          const s = JSON.parse(localStorage.getItem(SETTINGS_KEY));
+          return s || { tags: DEFAULT_TAGS, subCats: DEFAULT_SUBS };
+        } catch { return { tags: DEFAULT_TAGS, subCats: DEFAULT_SUBS }; }
+      });
+
+      const { tags, subCats } = settings;
+
       const [filter, setFilter] = useState("");
       const [tagFilter, setTagFilter] = useState("All");
       const [dragOver, setDragOver] = useState(false);
       const [fileName, setFileName] = useState("");
+      const [showManage, setShowManage] = useState(false);
 
-      // Persist on change
-      useEffect(() => {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(rows));
-      }, [rows]);
+      useEffect(() => { localStorage.setItem(STORAGE_KEY, JSON.stringify(rows)); }, [rows]);
+      useEffect(() => { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); }, [settings]);
 
       const handleFile = useCallback((file) => {
         if (!file) return;
         setFileName(file.name);
         const reader = new FileReader();
         reader.onload = (e) => {
-          const parsed = parseCSV(e.target.result);
+          const parsed = parseCSV(e.target.result, tags, subCats);
           if (parsed.length === 0) {
             alert("No transactions found. Make sure the CSV has Date, Description, and Amount columns.");
             return;
           }
           setRows(prev => {
-            // Merge: keep existing categorisations for matching ids, append new
             const existingMap = {};
             prev.forEach(r => { existingMap[r.id] = r; });
             return parsed.map(r => existingMap[r.id] || r);
           });
         };
         reader.readAsText(file);
-      }, []);
+      }, [tags, subCats]);
 
       const handleDrop = (e) => {
-        e.preventDefault();
-        setDragOver(false);
-        handleFile(e.dataTransfer.files[0]);
+        e.preventDefault(); setDragOver(false); handleFile(e.dataTransfer.files[0]);
       };
 
       const updateRow = useCallback((updated) => {
         setRows(prev => prev.map(r => r.id === updated.id ? updated : r));
       }, []);
+
+      const handleSaveSettings = (newTags, newSubs) => {
+        setSettings({ tags: newTags, subCats: newSubs });
+        // Fix any rows whose tag/sub no longer exist
+        setRows(prev => prev.map(r => ({
+          ...r,
+          tag: newTags.includes(r.tag) ? r.tag : newTags[0],
+          sub: newSubs.includes(r.sub) ? r.sub : newSubs[newSubs.length - 1],
+        })));
+        setTagFilter("All");
+        setShowManage(false);
+      };
 
       const exportCSV = () => {
         const header = "Date,Description,Amount,Tag,SubCategory\n";
@@ -302,9 +432,7 @@
       };
 
       const clearAll = () => {
-        if (confirm("Clear all transactions? This cannot be undone.")) {
-          setRows([]); setFileName("");
-        }
+        if (confirm("Clear all transactions? This cannot be undone.")) { setRows([]); setFileName(""); }
       };
 
       const filtered = useMemo(() => {
@@ -319,13 +447,28 @@
 
       return (
         <div className="min-h-screen p-4 md:p-8 max-w-7xl mx-auto">
+          {showManage && (
+            <ManageModal
+              tags={tags}
+              subCats={subCats}
+              onClose={() => setShowManage(false)}
+              onSave={handleSaveSettings}
+            />
+          )}
+
           {/* Header */}
           <div className="mb-6 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div>
               <h1 className="text-2xl font-bold text-gray-900">Household Expense Tracker</h1>
               <p className="text-sm text-gray-500 mt-0.5">Neo World Elite Mastercard · {rows.length} transactions</p>
             </div>
-            <div className="flex gap-2">
+            <div className="flex gap-2 flex-wrap">
+              <button
+                onClick={() => setShowManage(true)}
+                className="px-4 py-2 bg-gray-100 text-gray-700 text-sm font-medium rounded-xl hover:bg-gray-200 transition-colors"
+              >
+                ⚙ Categories
+              </button>
               {rows.length > 0 && (
                 <>
                   <button onClick={exportCSV} className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-xl hover:bg-blue-700 transition-colors">
@@ -347,21 +490,18 @@
             className={`mb-6 border-2 border-dashed rounded-2xl p-8 text-center transition-colors cursor-pointer ${dragOver ? "border-blue-400 bg-blue-50" : "border-gray-200 bg-white hover:border-blue-300"}`}
             onClick={() => document.getElementById("csvInput").click()}
           >
-            <input
-              id="csvInput" type="file" accept=".csv,.txt" className="hidden"
-              onChange={e => handleFile(e.target.files[0])}
-            />
+            <input id="csvInput" type="file" accept=".csv,.txt" className="hidden"
+              onChange={e => handleFile(e.target.files[0])} />
             <div className="text-4xl mb-2">📂</div>
             {fileName
               ? <p className="text-gray-700 font-medium">{fileName} loaded</p>
-              : <p className="text-gray-500">Drop your CSV here, or click to browse</p>
-            }
+              : <p className="text-gray-500">Drop your CSV here, or click to browse</p>}
             <p className="text-xs text-gray-400 mt-1">Expected columns: Date, Description, Amount</p>
           </div>
 
           {rows.length > 0 && (
             <>
-              <Dashboard rows={rows} />
+              <Dashboard rows={rows} tags={tags} subCats={subCats} />
 
               {/* Filter bar */}
               <div className="flex flex-col sm:flex-row gap-3 mb-4">
@@ -372,8 +512,8 @@
                   onChange={e => setFilter(e.target.value)}
                   className="flex-1 px-4 py-2 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-300"
                 />
-                <div className="flex gap-1.5">
-                  {["All", ...TOP_TAGS].map(t => (
+                <div className="flex gap-1.5 flex-wrap">
+                  {["All", ...tags].map(t => (
                     <button
                       key={t}
                       onClick={() => setTagFilter(t)}
@@ -401,7 +541,9 @@
                     <tbody>
                       {filtered.length === 0
                         ? <tr><td colSpan={5} className="py-10 text-center text-gray-400 text-sm">No transactions match your filter.</td></tr>
-                        : filtered.map(r => <TransactionRow key={r.id} row={r} onChange={updateRow} />)
+                        : filtered.map(r => (
+                          <TransactionRow key={r.id} row={r} onChange={updateRow} tags={tags} subCats={subCats} />
+                        ))
                       }
                     </tbody>
                   </table>
