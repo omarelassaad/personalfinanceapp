@@ -162,12 +162,31 @@
       return CARD_PROFILES[CARD_PROFILES.length - 1];
     }
 
+    // TD exports have no header row: Date, Description, Debit, Credit, Balance
+    const TD_INJECTED_HEADERS = ["date","description","debit","credit","balance"];
+
+    function isHeaderless(firstLine, delim) {
+      // If the first cell looks like a date (MM/DD/YYYY or YYYY-MM-DD) it's data, not a header
+      const first = splitLine(firstLine, delim)[0] || "";
+      return /^\d{2}\/\d{2}\/\d{4}$/.test(first.trim()) || /^\d{4}-\d{2}-\d{2}$/.test(first.trim());
+    }
+
     function parseCSV(text, cardId, tags, subCats) {
-      const lines = text.trim().split(/\r?\n/);
-      if (lines.length < 2) return [];
+      const lines = text.trim().split(/\r?\n/).filter(l => l.trim());
+      if (lines.length < 1) return [];
       const delim = lines[0].includes("\t") ? "\t" : ",";
-      const rawHeaders = splitLine(lines[0], delim);
-      const headers = rawHeaders.map(h => h.toLowerCase().replace(/\s+/g,""));
+
+      let headers;
+      let dataStartIdx;
+
+      if (isHeaderless(lines[0], delim)) {
+        // Inject known headers for TD (no-header format)
+        headers = TD_INJECTED_HEADERS;
+        dataStartIdx = 0;
+      } else {
+        headers = splitLine(lines[0], delim).map(h => h.toLowerCase().replace(/\s+/g,""));
+        dataStartIdx = 1;
+      }
 
       // Determine profile: use provided cardId, or auto-detect
       const profile = cardId
@@ -175,19 +194,20 @@
         : detectProfile(headers);
 
       const rows = [];
-      for (let i = 1; i < lines.length; i++) {
+      for (let i = dataStartIdx; i < lines.length; i++) {
         if (!lines[i].trim()) continue;
         const cols = splitLine(lines[i], delim);
         const row = {};
         headers.forEach((h, idx) => { row[h] = cols[idx] || ""; });
 
-        const date    = pickCol(row, profile.dateCol);
-        const desc    = pickCol(row, profile.descCol);
-        const amtRaw  = pickCol(row, profile.amountCol);
-        let   amt     = parseFloat(amtRaw.replace(/[$,\s]/g, "")) || 0;
+        const date   = pickCol(row, profile.dateCol);
+        const desc   = pickCol(row, profile.descCol);
+        // For headerless TD: debit column is spend, credit is payment — use debit
+        const amtRaw = pickCol(row, profile.amountCol);
+        let   amt    = parseFloat(amtRaw.replace(/[$,\s]/g, "")) || 0;
         if (profile.debitIsNegative) amt = Math.abs(amt);
-        if (amt <= 0) continue; // skip credits / payments
-        if (!desc && !amt) continue;
+        if (amt <= 0) continue; // skip credits / payments / zero rows
+        if (!desc) continue;
 
         rows.push({
           id: `${profile.id}-${i}-${date}-${desc}`,
