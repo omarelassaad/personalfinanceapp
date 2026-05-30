@@ -3,11 +3,12 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Household Expense Tracker</title>
+  <title>WealthTrackr</title>
   <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
   <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
   <style>
     body { font-family: system-ui, sans-serif; background: #f8fafc; }
     .bar { transition: width 0.4s ease; }
@@ -18,6 +19,11 @@
 
   <script type="text/babel">
     const { useState, useEffect, useCallback, useMemo, useRef } = React;
+
+    // ─── Supabase ─────────────────────────────────────────────────────────────────
+    const SUPABASE_URL = "https://zekjsqfkupnytltmybap.supabase.co";
+    const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inpla2pzcWZrdXBueXRsdG15YmFwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODAxMDE4ODksImV4cCI6MjA5NTY3Nzg4OX0.MRrDPAUDIVKcPXKs9_88Dslfn_TuY_qequEsgTkal6g";
+    const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
     // ─── Defaults ─────────────────────────────────────────────────────────────────
     const DEFAULT_TAGS = ["Common", "Travel", "Adam", "Zayn", "Other"];
@@ -114,9 +120,7 @@
       return subCats[subCats.length - 1] || "Other";
     }
 
-    const STORAGE_KEY    = "expense-tracker-v2";
-    const SETTINGS_KEY   = "expense-tracker-settings-v1";
-    const LOADED_FILES_KEY = "expense-tracker-files-v1";
+    // localStorage keys removed — data now lives in Supabase
 
     // ─── Color palettes ───────────────────────────────────────────────────────────
     const TAG_COLOR_PALETTE = [
@@ -570,23 +574,12 @@
       );
     }
 
-    // ─── Main App ─────────────────────────────────────────────────────────────────
-    function App() {
-      const [rows, setRows] = useState(() => {
-        try { return JSON.parse(localStorage.getItem(STORAGE_KEY)) || []; } catch { return []; }
-      });
-      const [loadedFiles, setLoadedFiles] = useState(() => {
-        try { return JSON.parse(localStorage.getItem(LOADED_FILES_KEY)) || []; } catch { return []; }
-      });
-      const [settings, setSettings] = useState(() => {
-        try {
-          const s = JSON.parse(localStorage.getItem(SETTINGS_KEY));
-          return s || { tags: DEFAULT_TAGS, subCats: DEFAULT_SUBS };
-        } catch { return { tags: DEFAULT_TAGS, subCats: DEFAULT_SUBS }; }
-      });
-
-      const { tags, subCats } = settings;
-
+    // ─── Expenses Tab ─────────────────────────────────────────────────────────────
+    function ExpensesTab({ user }) {
+      const [rows, setRows]             = useState([]);
+      const [loadedFiles, setLoadedFiles] = useState([]);
+      const [settings, setSettings]     = useState({ tags: DEFAULT_TAGS, subCats: DEFAULT_SUBS });
+      const [loading, setLoading]       = useState(true);
       const [filter, setFilter]         = useState("");
       const [tagFilter, setTagFilter]   = useState("All");
       const [subFilter, setSubFilter]   = useState("All");
@@ -594,37 +587,61 @@
       const [showManage, setShowManage] = useState(false);
       const [showUpload, setShowUpload] = useState(false);
 
-      useEffect(() => { localStorage.setItem(STORAGE_KEY, JSON.stringify(rows)); }, [rows]);
-      useEffect(() => { localStorage.setItem(LOADED_FILES_KEY, JSON.stringify(loadedFiles)); }, [loadedFiles]);
-      useEffect(() => { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); }, [settings]);
+      const uid = user.id;
 
-      const handleLoad = useCallback((newRows, files) => {
-        setRows(prev => {
-          const map = {};
-          prev.forEach(r => { map[r.id] = r; });
-          // Merge new, preserving existing categorisations
-          const merged = [...prev];
-          newRows.forEach(r => {
-            if (map[r.id]) return; // already exists
-            merged.push(r);
-          });
-          return merged;
+      // Load all data from Supabase on mount
+      useEffect(() => {
+        Promise.all([
+          sb.from("transactions").select("*").eq("user_id", uid),
+          sb.from("loaded_files").select("*").eq("user_id", uid),
+          sb.from("settings").select("*").eq("user_id", uid).maybeSingle(),
+        ]).then(([txRes, filesRes, settingsRes]) => {
+          if (txRes.data)      setRows(txRes.data);
+          if (filesRes.data)   setLoadedFiles(filesRes.data.map(f => ({ name: f.name, cardId: f.card_id })));
+          if (settingsRes.data) setSettings({ tags: settingsRes.data.tags, subCats: settingsRes.data.sub_cats });
+          setLoading(false);
         });
+      }, [uid]);
+
+      const { tags, subCats } = settings;
+
+      const handleLoad = useCallback(async (newRows, files) => {
+        const existingIds = new Set(rows.map(r => r.id));
+        const brandNew = newRows.filter(r => !existingIds.has(r.id));
+        setRows(prev => [...prev, ...brandNew]);
         setLoadedFiles(prev => {
           const names = new Set(prev.map(f => f.name));
           return [...prev, ...files.filter(f => !names.has(f.name))];
         });
-      }, []);
+        if (brandNew.length > 0) {
+          await sb.from("transactions").insert(
+            brandNew.map(r => ({ id: r.id, user_id: uid, date: r.date, description: r.description, amount: r.amount, card: r.card, tag: r.tag, sub: r.sub }))
+          );
+        }
+        if (files.length > 0) {
+          await sb.from("loaded_files").upsert(
+            files.map(f => ({ user_id: uid, name: f.name, card_id: f.cardId })),
+            { onConflict: "user_id,name" }
+          );
+        }
+      }, [rows, uid]);
 
-      const updateRow  = useCallback((updated) => setRows(prev => prev.map(r => r.id === updated.id ? updated : r)), []);
-      const removeRow  = useCallback((id) => setRows(prev => prev.filter(r => r.id !== id)), []);
+      const updateRow = useCallback((updated) => {
+        setRows(prev => prev.map(r => r.id === updated.id ? updated : r));
+        sb.from("transactions").update({ tag: updated.tag, sub: updated.sub }).eq("id", updated.id).eq("user_id", uid);
+      }, [uid]);
+
+      const removeRow = useCallback((id) => {
+        setRows(prev => prev.filter(r => r.id !== id));
+        sb.from("transactions").delete().eq("id", id).eq("user_id", uid);
+      }, [uid]);
+
       const removeFile = (name) => {
         setLoadedFiles(prev => prev.filter(f => f.name !== name));
-        // Optionally remove rows from that file (matching prefix)
-        // We don't track file→row mapping so just leave rows; user can clear manually
+        sb.from("loaded_files").delete().eq("user_id", uid).eq("name", name);
       };
 
-      const handleSaveSettings = (newTags, newSubs) => {
+      const handleSaveSettings = async (newTags, newSubs) => {
         setSettings({ tags: newTags, subCats: newSubs });
         setRows(prev => prev.map(r => ({
           ...r,
@@ -633,6 +650,7 @@
         })));
         setTagFilter("All");
         setShowManage(false);
+        await sb.from("settings").upsert({ user_id: uid, tags: newTags, sub_cats: newSubs });
       };
 
       const exportCSV = () => {
@@ -647,8 +665,12 @@
         URL.revokeObjectURL(url);
       };
 
-      const clearAll = () => {
-        if (confirm("Clear all transactions and loaded files?")) { setRows([]); setLoadedFiles([]); }
+      const clearAll = async () => {
+        if (confirm("Clear all transactions and loaded files?")) {
+          setRows([]); setLoadedFiles([]);
+          await sb.from("transactions").delete().eq("user_id", uid);
+          await sb.from("loaded_files").delete().eq("user_id", uid);
+        }
       };
 
       const activeCards = useMemo(() => [...new Set(rows.map(r => r.card))], [rows]);
@@ -665,38 +687,32 @@
         return r;
       }, [rows, filter, tagFilter, subFilter, cardFilter]);
 
+      if (loading) return (
+        <div className="flex items-center justify-center h-64">
+          <div className="text-gray-400 text-sm animate-pulse">Loading your data…</div>
+        </div>
+      );
+
       return (
         <div className="min-h-screen p-4 md:p-8 max-w-7xl mx-auto">
           {showManage && <ManageModal tags={tags} subCats={subCats} onClose={() => setShowManage(false)} onSave={handleSaveSettings} />}
           {showUpload && <UploadModal tags={tags} subCats={subCats} onClose={() => setShowUpload(false)} onLoad={handleLoad} />}
 
-          {/* Header */}
           <div className="mb-6 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div>
               <h1 className="text-2xl font-bold text-gray-900">Household Expense Tracker</h1>
               <p className="text-sm text-gray-500 mt-0.5">{rows.length} transactions across {activeCards.length || 0} card{activeCards.length !== 1 ? "s" : ""}</p>
             </div>
             <div className="flex gap-2 flex-wrap">
-              <button onClick={() => setShowUpload(true)} className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-xl hover:bg-blue-700 transition-colors">
-                + Upload Statements
-              </button>
-              <button onClick={() => setShowManage(true)} className="px-4 py-2 bg-gray-100 text-gray-700 text-sm font-medium rounded-xl hover:bg-gray-200 transition-colors">
-                ⚙ Categories
-              </button>
-              {rows.length > 0 && (
-                <>
-                  <button onClick={exportCSV} className="px-4 py-2 bg-gray-100 text-gray-700 text-sm font-medium rounded-xl hover:bg-gray-200 transition-colors">
-                    Export CSV
-                  </button>
-                  <button onClick={clearAll} className="px-4 py-2 bg-gray-100 text-gray-600 text-sm font-medium rounded-xl hover:bg-gray-200 transition-colors">
-                    Clear All
-                  </button>
-                </>
-              )}
+              <button onClick={() => setShowUpload(true)} className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-xl hover:bg-blue-700 transition-colors">+ Upload Statements</button>
+              <button onClick={() => setShowManage(true)} className="px-4 py-2 bg-gray-100 text-gray-700 text-sm font-medium rounded-xl hover:bg-gray-200 transition-colors">⚙ Categories</button>
+              {rows.length > 0 && <>
+                <button onClick={exportCSV} className="px-4 py-2 bg-gray-100 text-gray-700 text-sm font-medium rounded-xl hover:bg-gray-200 transition-colors">Export CSV</button>
+                <button onClick={clearAll} className="px-4 py-2 bg-gray-100 text-gray-600 text-sm font-medium rounded-xl hover:bg-gray-200 transition-colors">Clear All</button>
+              </>}
             </div>
           </div>
 
-          {/* Loaded files chips */}
           {loadedFiles.length > 0 && (
             <div className="flex flex-wrap gap-2 mb-5">
               {loadedFiles.map(f => {
@@ -712,12 +728,8 @@
             </div>
           )}
 
-          {/* Empty state */}
           {rows.length === 0 && (
-            <div
-              onClick={() => setShowUpload(true)}
-              className="mb-6 border-2 border-dashed border-gray-200 bg-white rounded-2xl p-12 text-center cursor-pointer hover:border-blue-300 transition-colors"
-            >
+            <div onClick={() => setShowUpload(true)} className="mb-6 border-2 border-dashed border-gray-200 bg-white rounded-2xl p-12 text-center cursor-pointer hover:border-blue-300 transition-colors">
               <div className="text-5xl mb-3">📂</div>
               <p className="text-gray-500 font-medium">Upload your credit card statements to get started</p>
               <p className="text-xs text-gray-400 mt-1">Supports Neo Financial, Wealthsimple, TD First Class, TD Cash Back</p>
@@ -727,54 +739,27 @@
           {rows.length > 0 && (
             <>
               <Dashboard rows={rows} tags={tags} subCats={subCats} />
-
-              {/* Filter bar */}
               <div className="bg-white rounded-2xl border border-gray-100 shadow-sm px-4 py-3 mb-4 space-y-2.5">
-                {/* Search */}
-                <input type="text" placeholder="Search transactions…" value={filter}
-                  onChange={e => setFilter(e.target.value)}
+                <input type="text" placeholder="Search transactions…" value={filter} onChange={e => setFilter(e.target.value)}
                   className="w-full px-4 py-2 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-300" />
-
-                {/* Card filter */}
                 {activeCards.length > 1 && (
                   <div className="flex gap-1.5 flex-wrap items-center">
                     <span className="text-xs text-gray-400 font-medium w-16 shrink-0">Card</span>
                     {["All", ...activeCards].map(c => {
                       const profile = CARD_PROFILES.find(p => p.id === c);
-                      return (
-                        <button key={c} onClick={() => setCardFilter(c)}
-                          className={`px-3 py-1 rounded-lg text-xs font-medium transition-colors ${cardFilter === c ? "bg-gray-800 text-white" : "bg-gray-100 text-gray-600 hover:bg-gray-200"}`}>
-                          {c === "All" ? "All" : profile?.label || c}
-                        </button>
-                      );
+                      return <button key={c} onClick={() => setCardFilter(c)} className={`px-3 py-1 rounded-lg text-xs font-medium transition-colors ${cardFilter === c ? "bg-gray-800 text-white" : "bg-gray-100 text-gray-600 hover:bg-gray-200"}`}>{c === "All" ? "All" : profile?.label || c}</button>;
                     })}
                   </div>
                 )}
-
-                {/* Tag filter */}
                 <div className="flex gap-1.5 flex-wrap items-center">
                   <span className="text-xs text-gray-400 font-medium w-16 shrink-0">Tag</span>
-                  {["All", ...tags].map(t => (
-                    <button key={t} onClick={() => setTagFilter(t)}
-                      className={`px-3 py-1 rounded-lg text-xs font-medium transition-colors ${tagFilter === t ? "bg-blue-600 text-white" : "bg-gray-100 text-gray-600 hover:bg-gray-200"}`}>
-                      {t}
-                    </button>
-                  ))}
+                  {["All", ...tags].map(t => <button key={t} onClick={() => setTagFilter(t)} className={`px-3 py-1 rounded-lg text-xs font-medium transition-colors ${tagFilter === t ? "bg-blue-600 text-white" : "bg-gray-100 text-gray-600 hover:bg-gray-200"}`}>{t}</button>)}
                 </div>
-
-                {/* Sub-category filter */}
                 <div className="flex gap-1.5 flex-wrap items-center">
                   <span className="text-xs text-gray-400 font-medium w-16 shrink-0">Sub</span>
-                  {["All", ...subCats].map(s => (
-                    <button key={s} onClick={() => setSubFilter(s)}
-                      className={`px-3 py-1 rounded-lg text-xs font-medium transition-colors ${subFilter === s ? "bg-violet-600 text-white" : "bg-gray-100 text-gray-600 hover:bg-gray-200"}`}>
-                      {s}
-                    </button>
-                  ))}
+                  {["All", ...subCats].map(s => <button key={s} onClick={() => setSubFilter(s)} className={`px-3 py-1 rounded-lg text-xs font-medium transition-colors ${subFilter === s ? "bg-violet-600 text-white" : "bg-gray-100 text-gray-600 hover:bg-gray-200"}`}>{s}</button>)}
                 </div>
               </div>
-
-              {/* Table */}
               <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
                 <div className="overflow-x-auto">
                   <table className="w-full">
@@ -792,17 +777,14 @@
                     <tbody>
                       {filtered.length === 0
                         ? <tr><td colSpan={7} className="py-10 text-center text-gray-400 text-sm">No transactions match your filter.</td></tr>
-                        : filtered.map(r => (
-                          <TransactionRow key={r.id} row={r} onChange={updateRow} onRemove={removeRow} tags={tags} subCats={subCats} />
-                        ))
+                        : filtered.map(r => <TransactionRow key={r.id} row={r} onChange={updateRow} onRemove={removeRow} tags={tags} subCats={subCats} />)
                       }
                     </tbody>
                   </table>
                 </div>
                 {filtered.length > 0 && (
                   <div className="px-3 py-2 border-t border-gray-50 text-xs text-gray-400 text-right">
-                    Showing {filtered.length} of {rows.length} ·{" "}
-                    Total: <span className="font-semibold text-gray-600">${filtered.reduce((s,r)=>s+r.amount,0).toFixed(2)}</span>
+                    Showing {filtered.length} of {rows.length} · Total: <span className="font-semibold text-gray-600">${filtered.reduce((s,r)=>s+r.amount,0).toFixed(2)}</span>
                   </div>
                 )}
               </div>
@@ -815,8 +797,6 @@
     // ═══════════════════════════════════════════════════════════════════════════
     // NET WORTH TRACKER
     // ═══════════════════════════════════════════════════════════════════════════
-
-    const NW_KEY = "nw-tracker-v1";
 
     const NW_SECTIONS = [
       {
@@ -986,17 +966,36 @@
     }
 
     // ── Net Worth Tab ─────────────────────────────────────────────────────────────
-    function NetWorthTab() {
-      const [snapshots, setSnapshots] = useState(() => {
-        try { return JSON.parse(localStorage.getItem(NW_KEY)) || []; } catch { return []; }
-      });
-      const [showAdd, setShowAdd] = useState(false);
-      const [editIdx, setEditIdx] = useState(null);
+    function NetWorthTab({ user }) {
+      const [snapshots, setSnapshots] = useState([]);
+      const [loading, setLoading]     = useState(true);
+      const [showAdd, setShowAdd]     = useState(false);
+      const uid = user.id;
 
-      useEffect(() => { localStorage.setItem(NW_KEY, JSON.stringify(snapshots)); }, [snapshots]);
+      useEffect(() => {
+        sb.from("nw_snapshots").select("*").eq("user_id", uid).order("date")
+          .then(({ data }) => {
+            if (data) setSnapshots(data.map(s => ({ id: s.id, date: s.date, ...s.data })));
+            setLoading(false);
+          });
+      }, [uid]);
 
-      const addSnapshot = (snap) => setSnapshots(prev => [...prev, snap].sort((a,b) => a.date.localeCompare(b.date)));
-      const deleteSnapshot = (idx) => { if (confirm("Delete this snapshot?")) setSnapshots(prev => prev.filter((_,i) => i !== idx)); };
+      const addSnapshot = async (snap) => {
+        const { date, id: _ignore, ...accountData } = snap;
+        const { data, error } = await sb.from("nw_snapshots")
+          .insert({ user_id: uid, date, data: accountData })
+          .select().single();
+        if (!error && data) {
+          setSnapshots(prev => [...prev, { id: data.id, date: data.date, ...data.data }]
+            .sort((a,b) => a.date.localeCompare(b.date)));
+        }
+      };
+
+      const deleteSnapshot = async (snapId) => {
+        if (!confirm("Delete this snapshot?")) return;
+        setSnapshots(prev => prev.filter(s => s.id !== snapId));
+        await sb.from("nw_snapshots").delete().eq("id", snapId);
+      };
 
       // Latest and previous snapshot
       const latest = snapshots[snapshots.length - 1];
@@ -1007,6 +1006,12 @@
 
       // Show up to 5 most recent snapshots as columns
       const displaySnaps = snapshots.slice(-5);
+
+      if (loading) return (
+        <div className="flex items-center justify-center h-64">
+          <div className="text-gray-400 text-sm animate-pulse">Loading your data…</div>
+        </div>
+      );
 
       return (
         <div className="max-w-7xl mx-auto p-4 md:p-8">
@@ -1210,14 +1215,14 @@
                     </thead>
                     <tbody>
                       {[...snapshots].reverse().map((s, ri) => {
-                        const idx  = snapshots.length - 1 - ri;
-                        const nw   = calcNW(s);
+                        const idx   = snapshots.length - 1 - ri;
+                        const nw    = calcNW(s);
                         const prevS = snapshots[idx - 1];
-                        const pnw  = prevS ? calcNW(prevS) : null;
-                        const chg  = pnw != null ? nw - pnw : null;
-                        const pct  = pnw ? ((nw - pnw) / Math.abs(pnw)) * 100 : null;
+                        const pnw   = prevS ? calcNW(prevS) : null;
+                        const chg   = pnw != null ? nw - pnw : null;
+                        const pct   = pnw ? ((nw - pnw) / Math.abs(pnw)) * 100 : null;
                         return (
-                          <tr key={s.date} className="border-b border-gray-50 hover:bg-gray-50 group">
+                          <tr key={s.id || s.date} className="border-b border-gray-50 hover:bg-gray-50 group">
                             <td className="py-2.5 px-4 font-medium text-gray-700">{s.date}</td>
                             <td className="py-2.5 px-3 text-right font-mono font-semibold text-gray-900">{fmtCurrency(nw)}</td>
                             <td className={`py-2.5 px-3 text-right font-mono font-semibold ${chg==null?"text-gray-300":chg>=0?"text-green-600":"text-red-600"}`}>
@@ -1227,7 +1232,7 @@
                               {pct != null ? `${pct >= 0 ? "+" : ""}${pct.toFixed(2)}%` : "—"}
                             </td>
                             <td className="py-2.5 px-3 text-right">
-                              <button onClick={() => deleteSnapshot(idx)}
+                              <button onClick={() => deleteSnapshot(s.id)}
                                 className="opacity-0 group-hover:opacity-100 text-gray-300 hover:text-red-400 transition-all text-base">✕</button>
                             </td>
                           </tr>
@@ -1244,28 +1249,118 @@
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // ROOT — TAB SHELL
+    // LOGIN SCREEN
     // ═══════════════════════════════════════════════════════════════════════════
-    function Root() {
-      const [tab, setTab] = useState("expenses");
+    function LoginScreen() {
+      const [email, setEmail]       = useState("");
+      const [password, setPassword] = useState("");
+      const [mode, setMode]         = useState("login");
+      const [error, setError]       = useState("");
+      const [loading, setLoading]   = useState(false);
+      const [success, setSuccess]   = useState("");
+
+      const submit = async (e) => {
+        e.preventDefault();
+        setError(""); setSuccess(""); setLoading(true);
+        if (mode === "login") {
+          const { error } = await sb.auth.signInWithPassword({ email, password });
+          if (error) setError(error.message);
+        } else {
+          const { error } = await sb.auth.signUp({ email, password });
+          if (error) setError(error.message);
+          else setSuccess("Account created! Check your email to confirm, then log in.");
+        }
+        setLoading(false);
+      };
+
       return (
-        <div className="min-h-screen" style={{ background: "#f8fafc" }}>
-          {/* Tab nav */}
-          <div className="border-b border-gray-200 bg-white sticky top-0 z-40 shadow-sm">
-            <div className="max-w-7xl mx-auto px-4 md:px-8 flex gap-1 pt-2">
-              {[
-                { id: "expenses",  label: "💳 Expenses" },
-                { id: "networth",  label: "📈 Net Worth" },
-              ].map(t => (
-                <button key={t.id} onClick={() => setTab(t.id)}
-                  className={`px-5 py-2.5 text-sm font-medium rounded-t-xl transition-colors border-b-2 ${tab === t.id ? "border-blue-600 text-blue-600 bg-blue-50" : "border-transparent text-gray-500 hover:text-gray-700"}`}>
-                  {t.label}
-                </button>
-              ))}
+        <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-50 to-blue-50 p-4">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm p-8">
+            <div className="text-center mb-8">
+              <div className="text-4xl mb-3">💰</div>
+              <h1 className="text-2xl font-bold text-gray-900">WealthTrackr</h1>
+              <p className="text-sm text-gray-400 mt-1">El-Assaad Family Finance</p>
+            </div>
+            <form onSubmit={submit} className="space-y-4">
+              <div>
+                <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Email</label>
+                <input type="email" value={email} onChange={e => setEmail(e.target.value)} required
+                  className="w-full px-4 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-300"
+                  placeholder="you@example.com" />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Password</label>
+                <input type="password" value={password} onChange={e => setPassword(e.target.value)} required
+                  className="w-full px-4 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-300"
+                  placeholder="••••••••" />
+              </div>
+              {error   && <p className="text-xs text-red-600 bg-red-50 px-3 py-2 rounded-lg">{error}</p>}
+              {success && <p className="text-xs text-green-700 bg-green-50 px-3 py-2 rounded-lg">{success}</p>}
+              <button type="submit" disabled={loading}
+                className="w-full py-2.5 bg-blue-600 text-white text-sm font-semibold rounded-xl hover:bg-blue-700 transition-colors disabled:opacity-50">
+                {loading ? "Please wait…" : mode === "login" ? "Sign In" : "Create Account"}
+              </button>
+            </form>
+            <div className="text-center mt-4">
+              <button onClick={() => { setMode(m => m === "login" ? "signup" : "login"); setError(""); setSuccess(""); }}
+                className="text-xs text-gray-400 hover:text-blue-600 transition-colors">
+                {mode === "login" ? "Need an account? Sign up" : "Already have an account? Sign in"}
+              </button>
             </div>
           </div>
+        </div>
+      );
+    }
 
-          {tab === "expenses" ? <App /> : <NetWorthTab />}
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ROOT — AUTH + TAB SHELL
+    // ═══════════════════════════════════════════════════════════════════════════
+    function Root() {
+      const [user, setUser]   = useState(null);
+      const [authLoading, setAuthLoading] = useState(true);
+      const [tab, setTab]     = useState("expenses");
+
+      useEffect(() => {
+        sb.auth.getSession().then(({ data: { session } }) => {
+          setUser(session?.user ?? null);
+          setAuthLoading(false);
+        });
+        const { data: { subscription } } = sb.auth.onAuthStateChange((_, session) => {
+          setUser(session?.user ?? null);
+        });
+        return () => subscription.unsubscribe();
+      }, []);
+
+      if (authLoading) return (
+        <div className="min-h-screen flex items-center justify-center">
+          <div className="text-gray-400 text-sm animate-pulse">Loading…</div>
+        </div>
+      );
+
+      if (!user) return <LoginScreen />;
+
+      return (
+        <div className="min-h-screen" style={{ background: "#f8fafc" }}>
+          <div className="border-b border-gray-200 bg-white sticky top-0 z-40 shadow-sm">
+            <div className="max-w-7xl mx-auto px-4 md:px-8 flex items-center justify-between">
+              <div className="flex gap-1 pt-2">
+                {[{ id: "expenses", label: "💳 Expenses" }, { id: "networth", label: "📈 Net Worth" }].map(t => (
+                  <button key={t.id} onClick={() => setTab(t.id)}
+                    className={`px-5 py-2.5 text-sm font-medium rounded-t-xl transition-colors border-b-2 ${tab === t.id ? "border-blue-600 text-blue-600 bg-blue-50" : "border-transparent text-gray-500 hover:text-gray-700"}`}>
+                    {t.label}
+                  </button>
+                ))}
+              </div>
+              <div className="flex items-center gap-3 py-2">
+                <span className="text-xs text-gray-400 hidden sm:block">{user.email}</span>
+                <button onClick={() => sb.auth.signOut()}
+                  className="text-xs px-3 py-1.5 bg-gray-100 text-gray-600 rounded-lg hover:bg-gray-200 transition-colors">
+                  Sign out
+                </button>
+              </div>
+            </div>
+          </div>
+          {tab === "expenses" ? <ExpensesTab user={user} /> : <NetWorthTab user={user} />}
         </div>
       );
     }
