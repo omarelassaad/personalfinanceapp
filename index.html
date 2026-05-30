@@ -656,7 +656,7 @@
     }
 
     // ─── Expenses Tab ─────────────────────────────────────────────────────────────
-    function ExpensesTab({ user }) {
+    function ExpensesTab({ user, householdId }) {
       const [cycles, setCycles]               = useState([]);
       const [activeCycleId, setActiveCycleId] = useState(null);
       const [rows, setRows]                   = useState([]);
@@ -673,42 +673,54 @@
 
       const uid = user.id;
 
-      // ── Initial load: cycles + settings ──────────────────────────────────────
+      // ── Initial load: migrate orphans, load cycles + settings ────────────────
       useEffect(() => {
         async function init() {
+          // Migrate any pre-household records to this household
+          await Promise.all([
+            sb.from("transactions").update({ household_id: householdId }).eq("user_id", uid).is("household_id", null),
+            sb.from("cycles").update({ household_id: householdId }).eq("user_id", uid).is("household_id", null),
+            sb.from("loaded_files").update({ household_id: householdId }).eq("user_id", uid).is("household_id", null),
+            sb.from("nw_snapshots").update({ household_id: householdId }).eq("user_id", uid).is("household_id", null),
+          ]);
+
           const [cyclesRes, settingsRes] = await Promise.all([
-            sb.from("cycles").select("*").eq("user_id", uid).order("created_at"),
-            sb.from("settings").select("*").eq("user_id", uid).maybeSingle(),
+            sb.from("cycles").select("*").eq("household_id", householdId).order("created_at"),
+            sb.from("household_settings").select("*").eq("household_id", householdId).maybeSingle(),
           ]);
 
           if (settingsRes.data) {
             setSettings({ tags: settingsRes.data.tags, subCats: settingsRes.data.sub_cats });
+          } else {
+            // Try migrating old per-user settings
+            const { data: oldSettings } = await sb.from("settings").select("*").eq("user_id", uid).maybeSingle();
+            if (oldSettings) {
+              setSettings({ tags: oldSettings.tags, subCats: oldSettings.sub_cats });
+              await sb.from("household_settings").upsert({ household_id: householdId, tags: oldSettings.tags, sub_cats: oldSettings.sub_cats });
+            }
           }
 
           let loadedCycles = cyclesRes.data || [];
 
           if (loadedCycles.length === 0) {
-            // Check for orphaned transactions from before cycles were introduced
             const { data: orphanTx } = await sb.from("transactions")
-              .select("id").eq("user_id", uid).is("cycle_id", null).limit(1);
+              .select("id").eq("household_id", householdId).is("cycle_id", null).limit(1);
 
             if (orphanTx && orphanTx.length > 0) {
-              // Migrate existing data into a "Default" cycle
               const { data: defaultCycle } = await sb.from("cycles")
-                .insert({ user_id: uid, name: "Default" }).select().single();
+                .insert({ user_id: uid, household_id: householdId, name: "Default" }).select().single();
               if (defaultCycle) {
                 await sb.from("transactions").update({ cycle_id: defaultCycle.id })
-                  .eq("user_id", uid).is("cycle_id", null);
+                  .eq("household_id", householdId).is("cycle_id", null);
                 await sb.from("loaded_files").update({ cycle_id: defaultCycle.id })
-                  .eq("user_id", uid).is("cycle_id", null);
+                  .eq("household_id", householdId).is("cycle_id", null);
                 loadedCycles = [defaultCycle];
               }
             } else {
-              // Fresh start — auto-create the first cycle named after current month
               const now = new Date();
               const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
               const { data: firstCycle } = await sb.from("cycles")
-                .insert({ user_id: uid, name: `${months[now.getMonth()]} ${now.getFullYear()}` })
+                .insert({ user_id: uid, household_id: householdId, name: `${months[now.getMonth()]} ${now.getFullYear()}` })
                 .select().single();
               if (firstCycle) loadedCycles = [firstCycle];
             }
@@ -719,7 +731,7 @@
           setLoading(false);
         }
         init();
-      }, [uid]);
+      }, [householdId]);
 
       // ── Load transactions + files when active cycle changes ───────────────────
       useEffect(() => {
@@ -732,40 +744,40 @@
         setSubFilter("All");
         setCardFilter("All");
         Promise.all([
-          sb.from("transactions").select("*").eq("user_id", uid).eq("cycle_id", activeCycleId),
-          sb.from("loaded_files").select("*").eq("user_id", uid).eq("cycle_id", activeCycleId),
+          sb.from("transactions").select("*").eq("household_id", householdId).eq("cycle_id", activeCycleId),
+          sb.from("loaded_files").select("*").eq("household_id", householdId).eq("cycle_id", activeCycleId),
         ]).then(([txRes, filesRes]) => {
           setRows(txRes.data || []);
           setLoadedFiles((filesRes.data || []).map(f => ({ name: f.name, cardId: f.card_id })));
           setRowsLoading(false);
         });
-      }, [activeCycleId, uid]);
+      }, [activeCycleId, householdId]);
 
       const { tags, subCats } = settings;
 
       // ── Cycle management ──────────────────────────────────────────────────────
       const createCycle = useCallback(async (name) => {
-        const { data } = await sb.from("cycles").insert({ user_id: uid, name }).select().single();
+        const { data } = await sb.from("cycles").insert({ user_id: uid, household_id: householdId, name }).select().single();
         if (data) { setCycles(prev => [...prev, data]); setActiveCycleId(data.id); }
-      }, [uid]);
+      }, [uid, householdId]);
 
       const renameCycle = useCallback(async (cycleId, newName) => {
         setCycles(prev => prev.map(c => c.id === cycleId ? { ...c, name: newName } : c));
-        await sb.from("cycles").update({ name: newName }).eq("id", cycleId).eq("user_id", uid);
-      }, [uid]);
+        await sb.from("cycles").update({ name: newName }).eq("id", cycleId).eq("household_id", householdId);
+      }, [householdId]);
 
       const deleteCycle = useCallback(async (cycleId) => {
         const cycle = cycles.find(c => c.id === cycleId);
         if (!confirm(`Delete cycle "${cycle?.name}" and all its transactions?`)) return;
-        await sb.from("transactions").delete().eq("user_id", uid).eq("cycle_id", cycleId);
-        await sb.from("loaded_files").delete().eq("user_id", uid).eq("cycle_id", cycleId);
-        await sb.from("cycles").delete().eq("id", cycleId).eq("user_id", uid);
+        await sb.from("transactions").delete().eq("household_id", householdId).eq("cycle_id", cycleId);
+        await sb.from("loaded_files").delete().eq("household_id", householdId).eq("cycle_id", cycleId);
+        await sb.from("cycles").delete().eq("id", cycleId).eq("household_id", householdId);
         const remaining = cycles.filter(c => c.id !== cycleId);
         setCycles(remaining);
         if (activeCycleId === cycleId) {
           setActiveCycleId(remaining[remaining.length - 1]?.id || null);
         }
-      }, [cycles, activeCycleId, uid]);
+      }, [cycles, activeCycleId, householdId]);
 
       // ── Transactions ──────────────────────────────────────────────────────────
       const handleLoad = useCallback(async (newRows, files) => {
@@ -778,30 +790,30 @@
         });
         if (brandNew.length > 0) {
           await sb.from("transactions").insert(
-            brandNew.map(r => ({ id: r.id, user_id: uid, cycle_id: activeCycleId, date: r.date, description: r.description, amount: r.amount, card: r.card, tag: r.tag, sub: r.sub }))
+            brandNew.map(r => ({ id: r.id, user_id: uid, household_id: householdId, cycle_id: activeCycleId, date: r.date, description: r.description, amount: r.amount, card: r.card, tag: r.tag, sub: r.sub }))
           );
         }
         if (files.length > 0) {
           await sb.from("loaded_files").upsert(
-            files.map(f => ({ user_id: uid, cycle_id: activeCycleId, name: f.name, card_id: f.cardId })),
-            { onConflict: "user_id,cycle_id,name" }
+            files.map(f => ({ user_id: uid, household_id: householdId, cycle_id: activeCycleId, name: f.name, card_id: f.cardId })),
+            { onConflict: "household_id,cycle_id,name" }
           );
         }
-      }, [rows, uid, activeCycleId]);
+      }, [rows, uid, householdId, activeCycleId]);
 
       const updateRow = useCallback((updated) => {
         setRows(prev => prev.map(r => r.id === updated.id ? updated : r));
-        sb.from("transactions").update({ tag: updated.tag, sub: updated.sub }).eq("id", updated.id).eq("user_id", uid);
-      }, [uid]);
+        sb.from("transactions").update({ tag: updated.tag, sub: updated.sub }).eq("id", updated.id).eq("household_id", householdId);
+      }, [householdId]);
 
       const removeRow = useCallback((id) => {
         setRows(prev => prev.filter(r => r.id !== id));
-        sb.from("transactions").delete().eq("id", id).eq("user_id", uid);
-      }, [uid]);
+        sb.from("transactions").delete().eq("id", id).eq("household_id", householdId);
+      }, [householdId]);
 
       const removeFile = (name) => {
         setLoadedFiles(prev => prev.filter(f => f.name !== name));
-        sb.from("loaded_files").delete().eq("user_id", uid).eq("cycle_id", activeCycleId).eq("name", name);
+        sb.from("loaded_files").delete().eq("household_id", householdId).eq("cycle_id", activeCycleId).eq("name", name);
       };
 
       const handleSaveSettings = async (newTags, newSubs) => {
@@ -813,7 +825,7 @@
         })));
         setTagFilter("All");
         setShowManage(false);
-        await sb.from("settings").upsert({ user_id: uid, tags: newTags, sub_cats: newSubs });
+        await sb.from("household_settings").upsert({ household_id: householdId, tags: newTags, sub_cats: newSubs });
       };
 
       const exportCSV = () => {
@@ -833,8 +845,8 @@
         const cycleName = cycles.find(c => c.id === activeCycleId)?.name || "this cycle";
         if (confirm(`Clear all transactions in "${cycleName}"?`)) {
           setRows([]); setLoadedFiles([]);
-          await sb.from("transactions").delete().eq("user_id", uid).eq("cycle_id", activeCycleId);
-          await sb.from("loaded_files").delete().eq("user_id", uid).eq("cycle_id", activeCycleId);
+          await sb.from("transactions").delete().eq("household_id", householdId).eq("cycle_id", activeCycleId);
+          await sb.from("loaded_files").delete().eq("household_id", householdId).eq("cycle_id", activeCycleId);
         }
       };
 
@@ -1148,24 +1160,29 @@
     }
 
     // ── Net Worth Tab ─────────────────────────────────────────────────────────────
-    function NetWorthTab({ user }) {
+    function NetWorthTab({ user, householdId }) {
       const [snapshots, setSnapshots] = useState([]);
       const [loading, setLoading]     = useState(true);
       const [showAdd, setShowAdd]     = useState(false);
       const uid = user.id;
 
       useEffect(() => {
-        sb.from("nw_snapshots").select("*").eq("user_id", uid).order("date")
-          .then(({ data }) => {
-            if (data) setSnapshots(data.map(s => ({ id: s.id, date: s.date, ...s.data })));
-            setLoading(false);
-          });
-      }, [uid]);
+        async function load() {
+          // Migrate any pre-household snapshots
+          await sb.from("nw_snapshots").update({ household_id: householdId })
+            .eq("user_id", uid).is("household_id", null);
+          const { data } = await sb.from("nw_snapshots").select("*")
+            .eq("household_id", householdId).order("date");
+          if (data) setSnapshots(data.map(s => ({ id: s.id, date: s.date, ...s.data })));
+          setLoading(false);
+        }
+        load();
+      }, [householdId]);
 
       const addSnapshot = async (snap) => {
         const { date, id: _ignore, ...accountData } = snap;
         const { data, error } = await sb.from("nw_snapshots")
-          .insert({ user_id: uid, date, data: accountData })
+          .insert({ user_id: uid, household_id: householdId, date, data: accountData })
           .select().single();
         if (!error && data) {
           setSnapshots(prev => [...prev, { id: data.id, date: data.date, ...data.data }]
@@ -1431,6 +1448,115 @@
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
+    // HOUSEHOLD MODAL
+    // ═══════════════════════════════════════════════════════════════════════════
+    function HouseholdModal({ user, householdId, onClose, onJoin }) {
+      const [members, setMembers]   = useState([]);
+      const [inviteCode, setInviteCode] = useState(null);
+      const [joinCode, setJoinCode] = useState("");
+      const [error, setError]       = useState("");
+      const [busy, setBusy]         = useState(false);
+      const [copied, setCopied]     = useState(false);
+
+      useEffect(() => {
+        sb.from("household_members").select("user_id, role, joined_at")
+          .eq("household_id", householdId)
+          .then(({ data }) => setMembers(data || []));
+      }, [householdId]);
+
+      const generateCode = async () => {
+        setBusy(true);
+        const { data, error } = await sb.rpc("create_household_invite");
+        setBusy(false);
+        if (error) setError(error.message);
+        else setInviteCode(data);
+      };
+
+      const copyCode = () => {
+        navigator.clipboard.writeText(inviteCode);
+        setCopied(true); setTimeout(() => setCopied(false), 2000);
+      };
+
+      const joinHousehold = async () => {
+        const code = joinCode.trim();
+        if (!code) return;
+        setError(""); setBusy(true);
+        const { data, error } = await sb.rpc("join_household", { invite_code: code });
+        setBusy(false);
+        if (error) setError(error.message);
+        else onJoin(data);
+      };
+
+      const solo = members.length <= 1;
+
+      return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onClose} />
+          <div className="relative bg-white rounded-2xl shadow-xl w-full max-w-sm">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+              <h2 className="text-lg font-semibold text-gray-900">Household</h2>
+              <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl">&times;</button>
+            </div>
+            <div className="px-6 py-5 space-y-5">
+
+              {/* Members */}
+              <div>
+                <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">Members</p>
+                <div className="space-y-1.5">
+                  {members.map(m => (
+                    <div key={m.user_id} className="flex items-center gap-2.5 text-sm">
+                      <span className="w-2 h-2 rounded-full bg-green-400 shrink-0" />
+                      <span className="text-gray-600 font-mono text-xs truncate">{m.user_id.slice(0,8)}…</span>
+                      <span className={`text-xs px-1.5 py-0.5 rounded-full font-medium ${m.role === "owner" ? "bg-blue-100 text-blue-700" : "bg-gray-100 text-gray-500"}`}>{m.role}</span>
+                      {m.user_id === user.id && <span className="text-xs text-blue-500 font-medium">you</span>}
+                    </div>
+                  ))}
+                  {members.length === 0 && <p className="text-xs text-gray-400">Loading…</p>}
+                </div>
+              </div>
+
+              {/* Invite */}
+              <div>
+                <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">Invite someone</p>
+                {inviteCode ? (
+                  <div className="bg-blue-50 rounded-xl px-4 py-3 text-center">
+                    <p className="text-xs text-gray-500 mb-1.5">Share this code — valid for 24 hours</p>
+                    <p className="text-3xl font-bold tracking-[0.3em] text-blue-700 font-mono mb-2">{inviteCode}</p>
+                    <button onClick={copyCode} className="text-xs text-blue-600 hover:underline">{copied ? "Copied!" : "Copy to clipboard"}</button>
+                  </div>
+                ) : (
+                  <button onClick={generateCode} disabled={busy}
+                    className="w-full py-2 text-sm font-medium text-blue-600 bg-blue-50 rounded-xl hover:bg-blue-100 transition-colors disabled:opacity-50">
+                    {busy ? "Generating…" : "Generate invite code"}
+                  </button>
+                )}
+              </div>
+
+              {/* Join */}
+              {solo && (
+                <div>
+                  <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">Join a household</p>
+                  <div className="flex gap-2">
+                    <input type="text" value={joinCode}
+                      onChange={e => setJoinCode(e.target.value.toUpperCase())}
+                      placeholder="XXXXXX" maxLength={6}
+                      className="flex-1 text-sm px-3 py-2 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-300 font-mono tracking-widest text-center uppercase" />
+                    <button onClick={joinHousehold} disabled={busy || !joinCode.trim()}
+                      className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-xl hover:bg-blue-700 disabled:opacity-40">
+                      {busy ? "…" : "Join"}
+                    </button>
+                  </div>
+                  {error && <p className="text-xs text-red-600 mt-1.5">{error}</p>}
+                  <p className="text-xs text-gray-400 mt-1.5">Your data will be merged into the other household.</p>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
     // LOGIN SCREEN
     // ═══════════════════════════════════════════════════════════════════════════
     function LoginScreen() {
@@ -1495,12 +1621,14 @@
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // ROOT — AUTH + TAB SHELL
+    // ROOT — AUTH + HOUSEHOLD + TAB SHELL
     // ═══════════════════════════════════════════════════════════════════════════
     function Root() {
-      const [user, setUser]   = useState(null);
+      const [user, setUser]               = useState(null);
+      const [householdId, setHouseholdId] = useState(null);
       const [authLoading, setAuthLoading] = useState(true);
-      const [tab, setTab]     = useState("expenses");
+      const [tab, setTab]                 = useState("expenses");
+      const [showHousehold, setShowHousehold] = useState(false);
 
       useEffect(() => {
         sb.auth.getSession().then(({ data: { session } }) => {
@@ -1509,11 +1637,35 @@
         });
         const { data: { subscription } } = sb.auth.onAuthStateChange((_, session) => {
           setUser(session?.user ?? null);
+          if (!session) setHouseholdId(null);
         });
         return () => subscription.unsubscribe();
       }, []);
 
-      if (authLoading) return (
+      // Load or create household once user is known
+      useEffect(() => {
+        if (!user) return;
+        async function initHousehold() {
+          const { data: membership } = await sb.from("household_members")
+            .select("household_id").eq("user_id", user.id).maybeSingle();
+
+          if (membership) {
+            setHouseholdId(membership.household_id);
+          } else {
+            const { data: hh } = await sb.from("households")
+              .insert({ name: "My Household" }).select().single();
+            if (hh) {
+              await sb.from("household_members").insert({
+                user_id: user.id, household_id: hh.id, role: "owner"
+              });
+              setHouseholdId(hh.id);
+            }
+          }
+        }
+        initHousehold();
+      }, [user]);
+
+      if (authLoading || (user && !householdId)) return (
         <div className="min-h-screen flex items-center justify-center">
           <div className="text-gray-400 text-sm animate-pulse">Loading…</div>
         </div>
@@ -1523,6 +1675,14 @@
 
       return (
         <div className="min-h-screen" style={{ background: "#f8fafc" }}>
+          {showHousehold && (
+            <HouseholdModal
+              user={user}
+              householdId={householdId}
+              onClose={() => setShowHousehold(false)}
+              onJoin={(newId) => { setHouseholdId(newId); setShowHousehold(false); }}
+            />
+          )}
           <div className="border-b border-gray-200 bg-white sticky top-0 z-40 shadow-sm">
             <div className="max-w-7xl mx-auto px-4 md:px-8 flex items-center justify-between">
               <div className="flex gap-1 pt-2">
@@ -1533,7 +1693,11 @@
                   </button>
                 ))}
               </div>
-              <div className="flex items-center gap-3 py-2">
+              <div className="flex items-center gap-2 py-2">
+                <button onClick={() => setShowHousehold(true)}
+                  className="text-xs px-3 py-1.5 bg-gray-100 text-gray-600 rounded-lg hover:bg-gray-200 transition-colors flex items-center gap-1.5">
+                  <span>👥</span><span className="hidden sm:inline">Household</span>
+                </button>
                 <span className="text-xs text-gray-400 hidden sm:block">{user.email}</span>
                 <button onClick={() => sb.auth.signOut()}
                   className="text-xs px-3 py-1.5 bg-gray-100 text-gray-600 rounded-lg hover:bg-gray-200 transition-colors">
@@ -1542,7 +1706,9 @@
               </div>
             </div>
           </div>
-          {tab === "expenses" ? <ExpensesTab user={user} /> : <NetWorthTab user={user} />}
+          {tab === "expenses"
+            ? <ExpensesTab user={user} householdId={householdId} />
+            : <NetWorthTab user={user} householdId={householdId} />}
         </div>
       );
     }
