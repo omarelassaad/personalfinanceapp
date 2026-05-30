@@ -1618,6 +1618,7 @@
       const [householdId, setHouseholdId] = useState(null);
       const [authLoading, setAuthLoading] = useState(true);
       const [setupError, setSetupError]   = useState(false);
+      const [retryCount, setRetryCount]   = useState(0);
       const [tab, setTab]                 = useState("expenses");
       const [showHousehold, setShowHousehold] = useState(false);
 
@@ -1637,10 +1638,12 @@
       useEffect(() => {
         if (!user) return;
         async function initHousehold() {
+          setSetupError(false);
           const { data: membership, error: memErr } = await sb.from("household_members")
             .select("household_id").eq("user_id", user.id).maybeSingle();
 
           if (memErr) {
+            console.error("[initHousehold] household_members error:", memErr);
             // Only show setup screen if the table doesn't exist yet
             const missing = memErr.code === "42P01" ||
               (memErr.message && memErr.message.includes("does not exist"));
@@ -1656,7 +1659,11 @@
           const { data: hh, error: hhErr } = await sb.from("households")
             .insert({ name: "My Household" }).select().single();
 
-          if (hhErr) { setSetupError(true); return; }
+          if (hhErr) {
+            console.error("[initHousehold] households insert error:", hhErr);
+            setSetupError(true);
+            return;
+          }
 
           if (hh) {
             await sb.from("household_members").insert({
@@ -1666,7 +1673,7 @@
           }
         }
         initHousehold();
-      }, [user]);
+      }, [user, retryCount]);
 
       if (authLoading) return (
         <div className="min-h-screen flex items-center justify-center">
@@ -1683,6 +1690,10 @@
             <h2 className="text-lg font-bold text-gray-900 mb-2">Database setup required</h2>
             <p className="text-sm text-gray-500 mb-1">Run <span className="font-mono bg-gray-100 px-1 rounded">supabase_setup.sql</span> in your</p>
             <p className="text-sm text-gray-500 mb-5">Supabase SQL Editor to apply the latest schema.</p>
+            <button onClick={() => setRetryCount(c => c + 1)}
+              className="w-full bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium py-2 px-4 rounded-lg mb-3">
+              Retry
+            </button>
             <button onClick={() => sb.auth.signOut()}
               className="text-xs text-gray-400 hover:text-gray-600 underline">
               Sign out
