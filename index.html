@@ -117,6 +117,12 @@
       { keywords: ["gas","fuel","petrol","ultramar"], sub: "Fuel" },
     ];
 
+    // Normalize a merchant description for memory lookup:
+    // lowercase, strip trailing reference/confirmation numbers (6+ digits)
+    function normalizeDesc(desc) {
+      return (desc || "").toLowerCase().trim().replace(/\s+\d{6,}\s*$/, "").trim();
+    }
+
     function autoCategory(description, subCats) {
       const lower = (description || "").toLowerCase();
       for (const rule of KEYWORD_RULES) {
@@ -183,7 +189,7 @@
       return /^\d{2}\/\d{2}\/\d{4}$/.test(first.trim()) || /^\d{4}-\d{2}-\d{2}$/.test(first.trim());
     }
 
-    function parseCSV(text, cardId, tags, subCats) {
+    function parseCSV(text, cardId, tags, subCats, memory = {}) {
       const lines = text.trim().split(/\r?\n/).filter(l => l.trim());
       if (lines.length < 1) return [];
       const delim = lines[0].includes("\t") ? "\t" : ",";
@@ -244,8 +250,8 @@
           id: `${profile.id}-${i}-${date}-${desc}`,
           date, description: desc, amount: amt,
           card: profile.id,
-          tag: tags[0] || "Common",
-          sub: autoCategory(desc, subCats),
+          tag: (memory[normalizeDesc(desc)] || {}).tag || tags[0] || "Common",
+          sub: (memory[normalizeDesc(desc)] || {}).sub || autoCategory(desc, subCats),
         });
       }
       return rows;
@@ -317,7 +323,7 @@
     }
 
     // ─── Upload Modal ─────────────────────────────────────────────────────────────
-    function UploadModal({ onClose, onLoad, tags, subCats }) {
+    function UploadModal({ onClose, onLoad, tags, subCats, memory = {} }) {
       const [selectedCard, setSelectedCard] = useState("neo");
       const [dragOver, setDragOver]         = useState(false);
       const [pending, setPending]           = useState([]); // [{name, text, cardId}]
@@ -349,7 +355,7 @@
         if (pending.length === 0) return;
         let allRows = [];
         pending.forEach(({ text, cardId }) => {
-          allRows = allRows.concat(parseCSV(text, cardId, tags, subCats));
+          allRows = allRows.concat(parseCSV(text, cardId, tags, subCats, memory));
         });
         onLoad(allRows, pending.map(p => ({ name: p.name, cardId: p.cardId })));
         onClose();
@@ -683,6 +689,7 @@
       const [cardFilter, setCardFilter]       = useState("All");
       const [showManage, setShowManage]       = useState(false);
       const [showUpload, setShowUpload]       = useState(false);
+      const [memory,     setMemory]           = useState({});
 
       const uid = user.id;
 
@@ -807,6 +814,23 @@
         }
       }, [rows, uid, householdId, activeCycleId]);
 
+      // Fetch ALL household transaction categorizations to build the memory before uploading.
+      // Only pulls description+tag+sub — very lightweight.
+      const openUpload = useCallback(async () => {
+        const { data } = await sb.from("transactions")
+          .select("description,tag,sub")
+          .eq("household_id", householdId);
+        const mem = {};
+        (data || []).forEach(r => {
+          if (r.description && r.tag && r.sub) {
+            // Later entries overwrite earlier ones — most recently saved categorization wins
+            mem[normalizeDesc(r.description)] = { tag: r.tag, sub: r.sub };
+          }
+        });
+        setMemory(mem);
+        setShowUpload(true);
+      }, [householdId]);
+
       const updateRow = useCallback((updated) => {
         setRows(prev => prev.map(r => r.id === updated.id ? updated : r));
         // Include household_id in the payload so rows with household_id=NULL get
@@ -888,7 +912,7 @@
       return (
         <div className="min-h-screen p-4 md:p-8 max-w-7xl mx-auto">
           {showManage && <ManageModal tags={tags} subCats={subCats} onClose={() => setShowManage(false)} onSave={handleSaveSettings} />}
-          {showUpload && <UploadModal tags={tags} subCats={subCats} onClose={() => setShowUpload(false)} onLoad={handleLoad} />}
+          {showUpload && <UploadModal tags={tags} subCats={subCats} memory={memory} onClose={() => setShowUpload(false)} onLoad={handleLoad} />}
 
           <div className="mb-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div>
@@ -896,7 +920,7 @@
               <p className="text-sm text-gray-500 mt-0.5">{rows.length} transactions across {activeCards.length || 0} card{activeCards.length !== 1 ? "s" : ""}</p>
             </div>
             <div className="flex gap-2 flex-wrap">
-              <button onClick={() => setShowUpload(true)} className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-xl hover:bg-blue-700 transition-colors">+ Upload Statements</button>
+              <button onClick={openUpload} className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-xl hover:bg-blue-700 transition-colors">+ Upload Statements</button>
               <button onClick={() => setShowManage(true)} className="px-4 py-2 bg-gray-100 text-gray-700 text-sm font-medium rounded-xl hover:bg-gray-200 transition-colors">⚙ Categories</button>
               {rows.length > 0 && <>
                 <button onClick={exportCSV} className="px-4 py-2 bg-gray-100 text-gray-700 text-sm font-medium rounded-xl hover:bg-gray-200 transition-colors">Export CSV</button>
@@ -936,7 +960,7 @@
           ) : (
             <>
               {rows.length === 0 && (
-                <div onClick={() => setShowUpload(true)} className="mb-6 border-2 border-dashed border-gray-200 bg-white rounded-2xl p-12 text-center cursor-pointer hover:border-blue-300 transition-colors">
+                <div onClick={openUpload} className="mb-6 border-2 border-dashed border-gray-200 bg-white rounded-2xl p-12 text-center cursor-pointer hover:border-blue-300 transition-colors">
                   <div className="text-5xl mb-3">📂</div>
                   <p className="text-gray-500 font-medium">Upload your credit card statements to get started</p>
                   <p className="text-xs text-gray-400 mt-1">Supports Neo Financial, Wealthsimple, TD First Class, TD Cash Back</p>
