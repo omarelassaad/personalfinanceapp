@@ -15,6 +15,18 @@ create table if not exists public.households (
   name       text not null default 'My Household',
   created_at timestamptz default now()
 );
+alter table public.households enable row level security;
+drop policy if exists "households_insert" on public.households;
+drop policy if exists "households_select" on public.households;
+drop policy if exists "households_update" on public.households;
+-- Any signed-in user may create a household
+create policy "households_insert" on public.households
+  for insert with check (true);
+-- Users can view & update their own household (policy evaluated after member row exists)
+create policy "households_select" on public.households
+  for select using (id = public.get_my_household_id());
+create policy "households_update" on public.households
+  for update using (id = public.get_my_household_id());
 
 create table if not exists public.household_members (
   user_id      uuid primary key references auth.users(id) on delete cascade,

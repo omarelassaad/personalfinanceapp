@@ -1656,8 +1656,11 @@
             return;
           }
 
-          const { data: hh, error: hhErr } = await sb.from("households")
-            .insert({ name: "My Household" }).select().single();
+          // Generate the ID client-side so we don't need .select() on INSERT
+          // (SELECT policy on households requires a member row which doesn't exist yet)
+          const newHouseholdId = crypto.randomUUID();
+          const { error: hhErr } = await sb.from("households")
+            .insert({ id: newHouseholdId, name: "My Household" });
 
           if (hhErr) {
             console.error("[initHousehold] households insert error:", hhErr);
@@ -1665,12 +1668,14 @@
             return;
           }
 
-          if (hh) {
-            await sb.from("household_members").insert({
-              user_id: user.id, household_id: hh.id, role: "owner"
-            });
-            setHouseholdId(hh.id);
+          const { error: memErr2 } = await sb.from("household_members")
+            .insert({ user_id: user.id, household_id: newHouseholdId, role: "owner" });
+
+          if (memErr2) {
+            console.error("[initHousehold] household_members insert error:", memErr2);
           }
+
+          setHouseholdId(newHouseholdId);
         }
         initHousehold();
       }, [user, retryCount]);
