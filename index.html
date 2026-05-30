@@ -1651,31 +1651,42 @@
             // For any other error (permissions, network) fall through and try to create
           }
 
+          let hid;
           if (membership) {
-            setHouseholdId(membership.household_id);
-            return;
+            hid = membership.household_id;
+          } else {
+            // Generate the ID client-side so we don't need .select() on INSERT
+            // (SELECT policy on households requires a member row which doesn't exist yet)
+            const newHouseholdId = crypto.randomUUID();
+            const { error: hhErr } = await sb.from("households")
+              .insert({ id: newHouseholdId, name: "My Household" });
+
+            if (hhErr) {
+              console.error("[initHousehold] households insert error:", hhErr);
+              setSetupError(true);
+              return;
+            }
+
+            const { error: memErr2 } = await sb.from("household_members")
+              .insert({ user_id: user.id, household_id: newHouseholdId, role: "owner" });
+
+            if (memErr2) {
+              console.error("[initHousehold] household_members insert error:", memErr2);
+            }
+
+            hid = newHouseholdId;
           }
 
-          // Generate the ID client-side so we don't need .select() on INSERT
-          // (SELECT policy on households requires a member row which doesn't exist yet)
-          const newHouseholdId = crypto.randomUUID();
-          const { error: hhErr } = await sb.from("households")
-            .insert({ id: newHouseholdId, name: "My Household" });
+          // Migrate any rows that belong to this user but predate the household feature
+          // (they have household_id = NULL). Safe to run every login — no-op when already migrated.
+          await Promise.all([
+            sb.from("transactions").update({ household_id: hid }).eq("user_id", user.id).is("household_id", null),
+            sb.from("cycles")     .update({ household_id: hid }).eq("user_id", user.id).is("household_id", null),
+            sb.from("loaded_files").update({ household_id: hid }).eq("user_id", user.id).is("household_id", null),
+            sb.from("nw_snapshots").update({ household_id: hid }).eq("user_id", user.id).is("household_id", null),
+          ]);
 
-          if (hhErr) {
-            console.error("[initHousehold] households insert error:", hhErr);
-            setSetupError(true);
-            return;
-          }
-
-          const { error: memErr2 } = await sb.from("household_members")
-            .insert({ user_id: user.id, household_id: newHouseholdId, role: "owner" });
-
-          if (memErr2) {
-            console.error("[initHousehold] household_members insert error:", memErr2);
-          }
-
-          setHouseholdId(newHouseholdId);
+          setHouseholdId(hid);
         }
         initHousehold();
       }, [user, retryCount]);
