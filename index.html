@@ -796,13 +796,22 @@
 
       const updateRow = useCallback((updated) => {
         setRows(prev => prev.map(r => r.id === updated.id ? updated : r));
-        sb.from("transactions").update({ tag: updated.tag, sub: updated.sub }).eq("id", updated.id).eq("household_id", householdId);
-      }, [householdId]);
+        // Include household_id in the payload so rows with household_id=NULL get
+        // stamped correctly AND satisfy the RLS WITH CHECK constraint.
+        // Filter by user_id (always set) rather than household_id (may still be NULL).
+        sb.from("transactions")
+          .update({ tag: updated.tag, sub: updated.sub, household_id: householdId })
+          .eq("id", updated.id)
+          .eq("user_id", uid)
+          .then(({ error }) => { if (error) console.error("[updateRow]", error); });
+      }, [uid, householdId]);
 
       const removeRow = useCallback((id) => {
         setRows(prev => prev.filter(r => r.id !== id));
-        sb.from("transactions").delete().eq("id", id).eq("household_id", householdId);
-      }, [householdId]);
+        sb.from("transactions").delete()
+          .eq("id", id).eq("user_id", uid)
+          .then(({ error }) => { if (error) console.error("[removeRow]", error); });
+      }, [uid, householdId]);
 
       const removeFile = (name) => {
         setLoadedFiles(prev => prev.filter(f => f.name !== name));
