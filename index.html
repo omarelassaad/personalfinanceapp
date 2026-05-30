@@ -226,8 +226,19 @@
         const amtRaw = pickCol(row, profile.amountCol.map(c => c.replace(/[\s_]+/g,"")));
         let   amt    = parseFloat(amtRaw.replace(/[$,\s]/g, "")) || 0;
         if (profile.debitIsNegative) amt = Math.abs(amt);
-        if (amt <= 0) continue;
         if (!desc) continue;
+
+        if (amt <= 0) {
+          // Check for a non-payment credit (refund, cashback, points redemption, etc.)
+          // Only applies to formats that have a separate "credit" column (e.g. TD)
+          const creditRaw = (row["credit"] || "").replace(/[$,\s]/g, "");
+          const creditAmt = parseFloat(creditRaw) || 0;
+          if (creditAmt <= 0) continue; // truly no value — skip
+          // Skip actual payment rows (balance payments, thank-you credits, etc.)
+          if (/\bpayment\b|thank.?you|paiement|remittance/i.test(desc)) continue;
+          // Include as a negative amount — a refund/credit reduces net spending
+          amt = -creditAmt;
+        }
 
         rows.push({
           id: `${profile.id}-${i}-${date}-${desc}`,
@@ -629,7 +640,9 @@
         <tr className="border-b border-gray-50 hover:bg-gray-50 transition-colors group">
           <td className="py-2.5 px-3 text-sm text-gray-500 whitespace-nowrap">{row.date}</td>
           <td className="py-2.5 px-3 text-sm text-gray-800 max-w-xs truncate" title={row.description}>{row.description}</td>
-          <td className="py-2.5 px-3 text-sm font-medium text-gray-900 text-right whitespace-nowrap">${row.amount.toFixed(2)}</td>
+          <td className={`py-2.5 px-3 text-sm font-medium text-right whitespace-nowrap ${row.amount < 0 ? "text-emerald-600" : "text-gray-900"}`}>
+            {row.amount < 0 ? `-$${Math.abs(row.amount).toFixed(2)}` : `$${row.amount.toFixed(2)}`}
+          </td>
           <td className="py-2.5 px-3 whitespace-nowrap">
             <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${cardProfile.color}`}>{cardProfile.label}</span>
           </td>
