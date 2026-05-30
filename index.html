@@ -673,16 +673,9 @@
 
       const uid = user.id;
 
-      // ── Initial load: migrate orphans, load cycles + settings ────────────────
+      // ── Initial load: cycles + settings ──────────────────────────────────────
       useEffect(() => {
         async function init() {
-          // Migrate any pre-household records to this household
-          await Promise.all([
-            sb.from("transactions").update({ household_id: householdId }).eq("user_id", uid).is("household_id", null),
-            sb.from("cycles").update({ household_id: householdId }).eq("user_id", uid).is("household_id", null),
-            sb.from("loaded_files").update({ household_id: householdId }).eq("user_id", uid).is("household_id", null),
-            sb.from("nw_snapshots").update({ household_id: householdId }).eq("user_id", uid).is("household_id", null),
-          ]);
 
           const [cyclesRes, settingsRes] = await Promise.all([
             sb.from("cycles").select("*").eq("household_id", householdId).order("created_at"),
@@ -1168,9 +1161,6 @@
 
       useEffect(() => {
         async function load() {
-          // Migrate any pre-household snapshots
-          await sb.from("nw_snapshots").update({ household_id: householdId })
-            .eq("user_id", uid).is("household_id", null);
           const { data } = await sb.from("nw_snapshots").select("*")
             .eq("household_id", householdId).order("date");
           if (data) setSnapshots(data.map(s => ({ id: s.id, date: s.date, ...s.data })));
