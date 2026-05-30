@@ -812,7 +812,465 @@
       );
     }
 
-    ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+    // ═══════════════════════════════════════════════════════════════════════════
+    // NET WORTH TRACKER
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    const NW_KEY = "nw-tracker-v1";
+
+    const NW_SECTIONS = [
+      {
+        id: "chequing", label: "CHEQUING & SAVINGS", color: "#2E75B6", textColor: "#fff",
+        accounts: [
+          { id: "war_chest",   name: "The War Chest",          owner: "Omar",  type: "Chequing",    institution: "Wealthsimple" },
+          { id: "clan",        name: "The Clan",                owner: "Joint", type: "Chequing",    institution: "Wealthsimple" },
+          { id: "vibes",       name: "Plane Ticket & Vibes",   owner: "Joint", type: "Chequing",    institution: "Wealthsimple" },
+          { id: "little_homie",name: "Little Homie",           owner: "Adam",  type: "Chequing",    institution: "Wealthsimple" },
+          { id: "z_money",     name: "Z-Money",                owner: "Zayn",  type: "Chequing",    institution: "Wealthsimple" },
+          { id: "rawan_chq",   name: "Rawan's Chequing",       owner: "Rawan", type: "Chequing",    institution: "Wealthsimple" },
+        ]
+      },
+      {
+        id: "omar_inv", label: "OMAR — INVESTMENTS", color: "#1F4E79", textColor: "#fff",
+        accounts: [
+          { id: "omar_tfsa",   name: "TFSA",              owner: "Omar", type: "TFSA",    institution: "Qtrade" },
+          { id: "omar_rrsp_qt",name: "RRSP",              owner: "Omar", type: "RRSP",    institution: "Qtrade" },
+          { id: "omar_fhsa",   name: "FHSA",              owner: "Omar", type: "FHSA",    institution: "Qtrade" },
+          { id: "omar_cash",   name: "CDN Cash",          owner: "Omar", type: "Cash",    institution: "Qtrade" },
+          { id: "omar_nonreg", name: "Non-Registered",    owner: "Omar", type: "Non-reg", institution: "Wealthsimple" },
+          { id: "omar_rrsp_dj",name: "RRSP",              owner: "Omar", type: "RRSP",    institution: "Desjardins" },
+          { id: "omar_dpsp",   name: "DPSP",              owner: "Omar", type: "DPSP",    institution: "Desjardins" },
+        ]
+      },
+      {
+        id: "rawan_inv", label: "RAWAN — INVESTMENTS", color: "#5B5EA6", textColor: "#fff",
+        accounts: [
+          { id: "rawan_tfsa",    name: "TFSA",               owner: "Rawan", type: "TFSA",    institution: "Wealthsimple" },
+          { id: "rawan_fhsa",    name: "FHSA",               owner: "Rawan", type: "FHSA",    institution: "Wealthsimple" },
+          { id: "rawan_sp_rrsp", name: "Spousal RRSP",       owner: "Rawan", type: "RRSP",    institution: "Wealthsimple" },
+          { id: "rawan_nonreg_l",name: "Non-reg (large)",    owner: "Rawan", type: "Non-reg", institution: "Wealthsimple" },
+          { id: "rawan_nonreg_s",name: "Non-reg (small)",    owner: "Rawan", type: "Non-reg", institution: "Wealthsimple" },
+          { id: "rawan_rrsp_rbc1",name:"Group RRSP 489972893",owner:"Rawan",type: "RRSP",    institution: "RBC" },
+          { id: "rawan_rrsp_rbc2",name:"Group RRSP 489972901",owner:"Rawan",type: "RRSP",    institution: "RBC" },
+        ]
+      },
+      {
+        id: "other_assets", label: "OTHER ASSETS", color: "#C55A11", textColor: "#fff",
+        accounts: [
+          { id: "toronto_apt",  name: "Toronto Apartment",  owner: "Joint", type: "Real Estate", institution: "—" },
+          { id: "loan_mom",     name: "Loan Receivable — Mom", owner: "Omar", type: "Receivable",institution: "—" },
+        ]
+      },
+      {
+        id: "liabilities", label: "LIABILITIES", color: "#9C0006", textColor: "#fff",
+        accounts: [
+          { id: "loc",          name: "Portfolio Line of Credit", owner: "Joint", type: "Liability", institution: "Wealthsimple" },
+        ]
+      },
+      {
+        id: "resp", label: "KIDS RESP (excl. from Net Worth)", color: "#808080", textColor: "#fff",
+        excludeFromNW: true,
+        accounts: [
+          { id: "resp_adam",    name: "RESP — Adam",   owner: "Adam", type: "RESP", institution: "Qtrade" },
+          { id: "resp_zayn",    name: "RESP — Zayn",   owner: "Zayn", type: "RESP", institution: "Qtrade" },
+        ]
+      },
+    ];
+
+    const ALL_ACCOUNTS = NW_SECTIONS.flatMap(s => s.accounts.map(a => ({ ...a, sectionId: s.id, excludeFromNW: !!s.excludeFromNW })));
+
+    const NW_MILESTONES = [
+      { id: "m1", label: "$1M Net Worth",          target: 1000000, timeline: "~Mid 2027" },
+      { id: "m2", label: "$1M Investable Assets",  target: 1000000, timeline: "~2028" },
+      { id: "m3", label: "$2M Net Worth",          target: 2000000, timeline: "~2031" },
+      { id: "m4", label: "$4M Retirement Target",  target: 4000000, timeline: "~2043" },
+    ];
+
+    function fmtCurrency(n) {
+      if (n == null || isNaN(n)) return "—";
+      const abs = Math.abs(n);
+      const str = abs.toLocaleString("en-CA", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      return n < 0 ? `($${str})` : `$${str}`;
+    }
+
+    function calcNW(snapshot) {
+      if (!snapshot) return 0;
+      return ALL_ACCOUNTS
+        .filter(a => !a.excludeFromNW)
+        .reduce((s, a) => s + (parseFloat(snapshot[a.id]) || 0), 0);
+    }
+
+    // ── Add Snapshot Modal ────────────────────────────────────────────────────────
+    function AddSnapshotModal({ snapshots, onClose, onSave }) {
+      const today = new Date().toISOString().split("T")[0];
+      const [date, setDate] = useState(today);
+      const [values, setValues] = useState(() => {
+        // Prefill from latest snapshot
+        const last = snapshots[snapshots.length - 1];
+        const v = {};
+        ALL_ACCOUNTS.forEach(a => { v[a.id] = last ? (last[a.id] ?? "") : ""; });
+        return v;
+      });
+      const [notes, setNotes] = useState({});
+
+      const set = (id, val) => setValues(p => ({ ...p, [id]: val }));
+      const setNote = (id, val) => setNotes(p => ({ ...p, [id]: val }));
+
+      const nwPreview = ALL_ACCOUNTS
+        .filter(a => !a.excludeFromNW)
+        .reduce((s, a) => s + (parseFloat(values[a.id]) || 0), 0);
+
+      const save = () => {
+        if (!date) return;
+        const snap = { date, notes: { ...notes } };
+        ALL_ACCOUNTS.forEach(a => { snap[a.id] = parseFloat(values[a.id]) || 0; });
+        onSave(snap);
+        onClose();
+      };
+
+      return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onClose} />
+          <div className="relative bg-white rounded-2xl shadow-xl w-full max-w-2xl max-h-[92vh] flex flex-col">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+              <div>
+                <h2 className="text-lg font-semibold text-gray-900">Add Snapshot</h2>
+                <p className="text-xs text-gray-400 mt-0.5">Net Worth preview: <span className="font-semibold text-gray-700">{fmtCurrency(nwPreview)}</span></p>
+              </div>
+              <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl">&times;</button>
+            </div>
+
+            <div className="overflow-y-auto flex-1 px-6 py-4 space-y-5">
+              <div>
+                <label className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Snapshot Date</label>
+                <input type="date" value={date} onChange={e => setDate(e.target.value)}
+                  className="mt-1 block w-48 text-sm px-3 py-2 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-300" />
+              </div>
+
+              {NW_SECTIONS.map(section => (
+                <div key={section.id}>
+                  <div className="text-xs font-bold px-3 py-1.5 rounded-lg mb-2 text-white" style={{ background: section.color }}>
+                    {section.label}
+                  </div>
+                  <div className="space-y-1.5">
+                    {section.accounts.map(acc => (
+                      <div key={acc.id} className="grid grid-cols-12 gap-2 items-center">
+                        <div className="col-span-5 text-sm text-gray-700 truncate">{acc.name}</div>
+                        <div className="col-span-2 text-xs text-gray-400">{acc.owner}</div>
+                        <div className="col-span-5">
+                          <input
+                            type="number" step="0.01"
+                            value={values[acc.id]}
+                            onChange={e => set(acc.id, e.target.value)}
+                            placeholder="0.00"
+                            className="w-full text-sm px-2 py-1.5 border border-gray-200 rounded-lg text-right focus:outline-none focus:ring-2 focus:ring-blue-300 font-mono text-blue-700"
+                          />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div className="flex justify-between items-center gap-2 px-6 py-4 border-t border-gray-100">
+              <span className="text-sm font-semibold text-gray-700">Net Worth: <span className="text-green-700">{fmtCurrency(nwPreview)}</span></span>
+              <div className="flex gap-2">
+                <button onClick={onClose} className="px-4 py-2 text-sm text-gray-600 bg-gray-100 rounded-xl hover:bg-gray-200">Cancel</button>
+                <button onClick={save} className="px-5 py-2 text-sm font-medium text-white bg-blue-600 rounded-xl hover:bg-blue-700">Save Snapshot</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // ── Net Worth Tab ─────────────────────────────────────────────────────────────
+    function NetWorthTab() {
+      const [snapshots, setSnapshots] = useState(() => {
+        try { return JSON.parse(localStorage.getItem(NW_KEY)) || []; } catch { return []; }
+      });
+      const [showAdd, setShowAdd] = useState(false);
+      const [editIdx, setEditIdx] = useState(null);
+
+      useEffect(() => { localStorage.setItem(NW_KEY, JSON.stringify(snapshots)); }, [snapshots]);
+
+      const addSnapshot = (snap) => setSnapshots(prev => [...prev, snap].sort((a,b) => a.date.localeCompare(b.date)));
+      const deleteSnapshot = (idx) => { if (confirm("Delete this snapshot?")) setSnapshots(prev => prev.filter((_,i) => i !== idx)); };
+
+      // Latest and previous snapshot
+      const latest = snapshots[snapshots.length - 1];
+      const prev   = snapshots[snapshots.length - 2];
+      const latestNW = calcNW(latest);
+      const prevNW   = calcNW(prev);
+      const nwChange = latest && prev ? latestNW - prevNW : null;
+
+      // Show up to 5 most recent snapshots as columns
+      const displaySnaps = snapshots.slice(-5);
+
+      return (
+        <div className="max-w-7xl mx-auto p-4 md:p-8">
+          {showAdd && <AddSnapshotModal snapshots={snapshots} onClose={() => setShowAdd(false)} onSave={addSnapshot} />}
+
+          {/* Header */}
+          <div className="mb-6 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div>
+              <h1 className="text-2xl font-bold text-gray-900">EL-ASSAAD FAMILY — NET WORTH</h1>
+              <p className="text-sm text-gray-500 mt-0.5">Excludes kids RESP accounts · {snapshots.length} snapshot{snapshots.length !== 1 ? "s" : ""}</p>
+            </div>
+            <button onClick={() => setShowAdd(true)}
+              className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-xl hover:bg-blue-700 transition-colors">
+              + Add Snapshot
+            </button>
+          </div>
+
+          {/* KPI cards */}
+          {latest && (
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
+              {[
+                { label: "Current Net Worth", value: fmtCurrency(latestNW), sub: latest.date, color: "text-gray-900" },
+                { label: "Change (last snapshot)", value: nwChange != null ? fmtCurrency(nwChange) : "—", sub: prev ? `vs ${prev.date}` : "—", color: nwChange >= 0 ? "text-green-600" : "text-red-600" },
+                { label: "To $1M Goal", value: fmtCurrency(1000000 - latestNW), sub: `${((latestNW/1000000)*100).toFixed(1)}% complete`, color: "text-blue-700" },
+                { label: "Snapshots Logged", value: snapshots.length, sub: `First: ${snapshots[0]?.date || "—"}`, color: "text-gray-700" },
+              ].map(k => (
+                <div key={k.label} className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4">
+                  <div className="text-xs text-gray-400 font-medium mb-1">{k.label}</div>
+                  <div className={`text-xl font-bold ${k.color}`}>{k.value}</div>
+                  <div className="text-xs text-gray-400 mt-0.5">{k.sub}</div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Main account table */}
+          {snapshots.length === 0 ? (
+            <div onClick={() => setShowAdd(true)}
+              className="border-2 border-dashed border-gray-200 bg-white rounded-2xl p-12 text-center cursor-pointer hover:border-blue-300 transition-colors">
+              <div className="text-5xl mb-3">💰</div>
+              <p className="text-gray-500 font-medium">Add your first snapshot to get started</p>
+              <p className="text-xs text-gray-400 mt-1">Log balances across all accounts to track your net worth over time</p>
+            </div>
+          ) : (
+            <>
+              <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden mb-6">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr>
+                        <th colSpan={4} className="py-3 px-4 text-left text-xs font-semibold text-white uppercase tracking-wide" style={{ background: "#1F4E79" }}>
+                          Account
+                        </th>
+                        {displaySnaps.map(s => (
+                          <th key={s.date} className="py-3 px-3 text-right text-xs font-semibold text-white whitespace-nowrap" style={{ background: "#1F4E79" }}>
+                            {s.date}
+                          </th>
+                        ))}
+                        <th className="py-3 px-3 text-right text-xs font-semibold text-white whitespace-nowrap" style={{ background: "#1F4E79" }}>Change $</th>
+                        <th className="py-3 px-3 w-8" style={{ background: "#1F4E79" }} />
+                      </tr>
+                      <tr className="text-xs text-gray-500" style={{ background: "#D6E4F0" }}>
+                        <th className="py-1.5 px-4 text-left font-medium">Name</th>
+                        <th className="py-1.5 px-3 text-left font-medium">Owner</th>
+                        <th className="py-1.5 px-3 text-left font-medium">Type</th>
+                        <th className="py-1.5 px-3 text-left font-medium">Institution</th>
+                        {displaySnaps.map(s => <th key={s.date} className="py-1.5 px-3" />)}
+                        <th colSpan={2} />
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {NW_SECTIONS.map(section => {
+                        const sectionTotal = (snap) => snap ? section.accounts.reduce((s,a) => s+(parseFloat(snap[a.id])||0), 0) : null;
+                        const latestSec = sectionTotal(latest);
+                        const prevSec   = sectionTotal(prev);
+                        return (
+                          <React.Fragment key={section.id}>
+                            {/* Section header */}
+                            <tr>
+                              <td colSpan={4 + displaySnaps.length + 2} className="py-2 px-4 text-xs font-bold text-white" style={{ background: section.color }}>
+                                {section.label}
+                              </td>
+                            </tr>
+                            {/* Account rows */}
+                            {section.accounts.map((acc, ai) => {
+                              const latestVal = latest ? (parseFloat(latest[acc.id]) || 0) : null;
+                              const prevVal   = prev   ? (parseFloat(prev[acc.id])   || 0) : null;
+                              const change    = latestVal != null && prevVal != null ? latestVal - prevVal : null;
+                              return (
+                                <tr key={acc.id} className={`border-b border-gray-50 ${ai % 2 === 0 ? "bg-white" : "bg-gray-50/50"}`}>
+                                  <td className="py-2 px-4 text-gray-800 font-medium whitespace-nowrap">{acc.name}</td>
+                                  <td className="py-2 px-3 text-gray-400 text-xs">{acc.owner}</td>
+                                  <td className="py-2 px-3 text-gray-400 text-xs">{acc.type}</td>
+                                  <td className="py-2 px-3 text-gray-400 text-xs">{acc.institution}</td>
+                                  {displaySnaps.map(s => (
+                                    <td key={s.date} className="py-2 px-3 text-right font-mono text-xs text-blue-700 whitespace-nowrap">
+                                      {fmtCurrency(parseFloat(s[acc.id]) || 0)}
+                                    </td>
+                                  ))}
+                                  <td className={`py-2 px-3 text-right font-mono text-xs whitespace-nowrap font-semibold ${change == null ? "text-gray-300" : change >= 0 ? "text-green-600" : "text-red-600"}`}>
+                                    {change != null ? fmtCurrency(change) : "—"}
+                                  </td>
+                                  <td />
+                                </tr>
+                              );
+                            })}
+                            {/* Section total */}
+                            <tr className="border-b-2 border-gray-200">
+                              <td colSpan={4} className="py-2 px-4 text-xs font-bold text-gray-600 uppercase">Total — {section.label}</td>
+                              {displaySnaps.map(s => (
+                                <td key={s.date} className="py-2 px-3 text-right font-mono text-xs font-bold text-gray-800 whitespace-nowrap">
+                                  {fmtCurrency(sectionTotal(s))}
+                                </td>
+                              ))}
+                              <td className={`py-2 px-3 text-right font-mono text-xs font-bold whitespace-nowrap ${(latestSec - prevSec) >= 0 ? "text-green-600" : "text-red-600"}`}>
+                                {prev ? fmtCurrency(latestSec - prevSec) : "—"}
+                              </td>
+                              <td />
+                            </tr>
+                          </React.Fragment>
+                        );
+                      })}
+
+                      {/* TOTAL NET WORTH */}
+                      <tr style={{ background: "#1F4E79" }}>
+                        <td colSpan={4} className="py-3 px-4 text-sm font-bold text-white uppercase tracking-wide">TOTAL NET WORTH (excl. kids RESP)</td>
+                        {displaySnaps.map(s => (
+                          <td key={s.date} className="py-3 px-3 text-right font-mono text-sm font-bold text-white whitespace-nowrap">
+                            {fmtCurrency(calcNW(s))}
+                          </td>
+                        ))}
+                        <td className={`py-3 px-3 text-right font-mono text-sm font-bold whitespace-nowrap ${nwChange >= 0 ? "text-green-300" : "text-red-300"}`}>
+                          {nwChange != null ? fmtCurrency(nwChange) : "—"}
+                        </td>
+                        <td style={{ background: "#1F4E79" }} />
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {/* Milestone Tracker */}
+              <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden mb-6">
+                <div className="px-5 py-3 text-sm font-bold text-white uppercase tracking-wide" style={{ background: "#C55A11" }}>
+                  MILESTONE TRACKER
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="bg-gray-50 border-b border-gray-100 text-xs text-gray-500 font-semibold uppercase tracking-wide">
+                        <th className="py-2.5 px-4 text-left">Milestone</th>
+                        <th className="py-2.5 px-3 text-right">Target</th>
+                        <th className="py-2.5 px-3 text-right">Current</th>
+                        <th className="py-2.5 px-3 text-right">Gap</th>
+                        <th className="py-2.5 px-3 text-left w-48">Progress</th>
+                        <th className="py-2.5 px-3 text-center">% Done</th>
+                        <th className="py-2.5 px-3 text-left">Est. Timeline</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {NW_MILESTONES.map((m, i) => {
+                        const current = latestNW;
+                        const pct     = Math.min(current / m.target, 1);
+                        const gap     = m.target - current;
+                        return (
+                          <tr key={m.id} className={`border-b border-gray-50 ${i%2===0?"bg-white":"bg-gray-50/40"}`}>
+                            <td className="py-2.5 px-4 font-medium text-gray-800">{m.label}</td>
+                            <td className="py-2.5 px-3 text-right font-mono text-gray-700">{fmtCurrency(m.target)}</td>
+                            <td className="py-2.5 px-3 text-right font-mono text-blue-700 font-semibold">{fmtCurrency(current)}</td>
+                            <td className={`py-2.5 px-3 text-right font-mono font-semibold ${gap > 0 ? "text-red-600" : "text-green-600"}`}>{fmtCurrency(gap)}</td>
+                            <td className="py-2.5 px-3">
+                              <div className="h-2.5 bg-gray-100 rounded-full overflow-hidden w-40">
+                                <div className="h-full bg-green-500 rounded-full bar" style={{ width: `${pct*100}%` }} />
+                              </div>
+                            </td>
+                            <td className="py-2.5 px-3 text-center text-xs font-semibold text-gray-700">{(pct*100).toFixed(1)}%</td>
+                            <td className="py-2.5 px-3 text-xs text-gray-400">{m.timeline}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {/* Snapshot History */}
+              <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+                <div className="px-5 py-3 text-sm font-bold text-white uppercase tracking-wide" style={{ background: "#1F4E79" }}>
+                  SNAPSHOT HISTORY
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="bg-gray-50 border-b border-gray-100 text-xs text-gray-500 font-semibold uppercase tracking-wide">
+                        <th className="py-2.5 px-4 text-left">Date</th>
+                        <th className="py-2.5 px-3 text-right">Net Worth</th>
+                        <th className="py-2.5 px-3 text-right">Change $</th>
+                        <th className="py-2.5 px-3 text-right">Change %</th>
+                        <th className="py-2.5 px-3 w-10" />
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {[...snapshots].reverse().map((s, ri) => {
+                        const idx  = snapshots.length - 1 - ri;
+                        const nw   = calcNW(s);
+                        const prevS = snapshots[idx - 1];
+                        const pnw  = prevS ? calcNW(prevS) : null;
+                        const chg  = pnw != null ? nw - pnw : null;
+                        const pct  = pnw ? ((nw - pnw) / Math.abs(pnw)) * 100 : null;
+                        return (
+                          <tr key={s.date} className="border-b border-gray-50 hover:bg-gray-50 group">
+                            <td className="py-2.5 px-4 font-medium text-gray-700">{s.date}</td>
+                            <td className="py-2.5 px-3 text-right font-mono font-semibold text-gray-900">{fmtCurrency(nw)}</td>
+                            <td className={`py-2.5 px-3 text-right font-mono font-semibold ${chg==null?"text-gray-300":chg>=0?"text-green-600":"text-red-600"}`}>
+                              {chg != null ? fmtCurrency(chg) : "—"}
+                            </td>
+                            <td className={`py-2.5 px-3 text-right font-mono text-xs ${pct==null?"text-gray-300":pct>=0?"text-green-600":"text-red-600"}`}>
+                              {pct != null ? `${pct >= 0 ? "+" : ""}${pct.toFixed(2)}%` : "—"}
+                            </td>
+                            <td className="py-2.5 px-3 text-right">
+                              <button onClick={() => deleteSnapshot(idx)}
+                                className="opacity-0 group-hover:opacity-100 text-gray-300 hover:text-red-400 transition-all text-base">✕</button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+      );
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ROOT — TAB SHELL
+    // ═══════════════════════════════════════════════════════════════════════════
+    function Root() {
+      const [tab, setTab] = useState("expenses");
+      return (
+        <div className="min-h-screen" style={{ background: "#f8fafc" }}>
+          {/* Tab nav */}
+          <div className="border-b border-gray-200 bg-white sticky top-0 z-40 shadow-sm">
+            <div className="max-w-7xl mx-auto px-4 md:px-8 flex gap-1 pt-2">
+              {[
+                { id: "expenses",  label: "💳 Expenses" },
+                { id: "networth",  label: "📈 Net Worth" },
+              ].map(t => (
+                <button key={t.id} onClick={() => setTab(t.id)}
+                  className={`px-5 py-2.5 text-sm font-medium rounded-t-xl transition-colors border-b-2 ${tab === t.id ? "border-blue-600 text-blue-600 bg-blue-50" : "border-transparent text-gray-500 hover:text-gray-700"}`}>
+                  {t.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {tab === "expenses" ? <App /> : <NetWorthTab />}
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<Root />);
   </script>
 </body>
 </html>
