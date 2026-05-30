@@ -46,11 +46,12 @@
         label: "Wealthsimple",
         color: "bg-emerald-100 text-emerald-800",
         dot: "bg-emerald-500",
-        detect: (headers) => headers.some(h => h.includes("wealthsimple") || h.includes("account type")),
-        dateCol:   ["date","transactiondate"],
-        descCol:   ["description","merchant name","payee"],
+        detect: (headers) => headers.some(h => h.includes("transaction_date") || h.includes("transactiondate") || h.includes("post_date") || h.includes("wealthsimple")),
+        dateCol:   ["transaction_date","transactiondate","date"],
+        descCol:   ["details","description","merchant name","payee"],
         amountCol: ["amount","debit"],
         debitIsNegative: false,
+        typeCol:   "type",          // only import rows where type === "Purchase"
       },
       {
         id: "td-first",
@@ -184,7 +185,9 @@
         headers = TD_INJECTED_HEADERS;
         dataStartIdx = 0;
       } else {
-        headers = splitLine(lines[0], delim).map(h => h.toLowerCase().replace(/\s+/g,""));
+        // normalise: lowercase, strip spaces AND underscores so
+        // "transaction_date" → "transactiondate" matches pickCol candidates
+        headers = splitLine(lines[0], delim).map(h => h.toLowerCase().replace(/[\s_]+/g,""));
         dataStartIdx = 1;
       }
 
@@ -200,13 +203,19 @@
         const row = {};
         headers.forEach((h, idx) => { row[h] = cols[idx] || ""; });
 
-        const date   = pickCol(row, profile.dateCol);
-        const desc   = pickCol(row, profile.descCol);
-        // For headerless TD: debit column is spend, credit is payment — use debit
-        const amtRaw = pickCol(row, profile.amountCol);
+        // If the profile has a typeCol, only import rows matching "Purchase"
+        if (profile.typeCol) {
+          const typeKey = profile.typeCol.toLowerCase().replace(/[\s_]+/g,"");
+          const typeVal = (row[typeKey] || "").toLowerCase();
+          if (typeVal && typeVal !== "purchase") continue;
+        }
+
+        const date   = pickCol(row, profile.dateCol.map(c => c.replace(/[\s_]+/g,"")));
+        const desc   = pickCol(row, profile.descCol.map(c => c.replace(/[\s_]+/g,"")));
+        const amtRaw = pickCol(row, profile.amountCol.map(c => c.replace(/[\s_]+/g,"")));
         let   amt    = parseFloat(amtRaw.replace(/[$,\s]/g, "")) || 0;
         if (profile.debitIsNegative) amt = Math.abs(amt);
-        if (amt <= 0) continue; // skip credits / payments / zero rows
+        if (amt <= 0) continue;
         if (!desc) continue;
 
         rows.push({
@@ -299,7 +308,7 @@
               // auto-detect card from headers
               const lines = e.target.result.trim().split(/\r?\n/);
               const delim = lines[0]?.includes("\t") ? "\t" : ",";
-              const headers = splitLine(lines[0] || "", delim).map(h => h.toLowerCase().replace(/\s+/g,""));
+              const headers = splitLine(lines[0] || "", delim).map(h => h.toLowerCase().replace(/[\s_]+/g,""));
               const detected = detectProfile(headers);
               // Don't duplicate by filename
               if (prev.find(p => p.name === file.name)) return prev;
