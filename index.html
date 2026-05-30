@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>WealthTrackr</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>💰</text></svg>" />
   <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
@@ -397,6 +398,80 @@
       );
     }
 
+    // ─── Cycle Switcher ──────────────────────────────────────────────────────────
+    function CycleSwitcher({ cycles, activeCycleId, onSelect, onRename, onDelete, onNew }) {
+      const [renaming, setRenaming]   = useState(null);
+      const [renameVal, setRenameVal] = useState("");
+      const [creating, setCreating]   = useState(false);
+      const [newName, setNewName]     = useState("");
+
+      const startRename = (c) => { setRenaming(c.id); setRenameVal(c.name); };
+      const commitRename = (id) => {
+        if (renameVal.trim()) onRename(id, renameVal.trim());
+        setRenaming(null);
+      };
+
+      const startCreate = () => {
+        const now = new Date();
+        const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+        setNewName(`${months[now.getMonth()]} ${now.getFullYear()}`);
+        setCreating(true);
+      };
+      const commitCreate = () => {
+        if (newName.trim()) onNew(newName.trim());
+        setCreating(false); setNewName("");
+      };
+
+      return (
+        <div className="flex items-center gap-2 flex-wrap mb-5">
+          <div className="flex items-center gap-0.5 bg-gray-100 rounded-xl p-1 flex-wrap">
+            {cycles.map(c => (
+              <div key={c.id} className={`relative flex items-center rounded-lg transition-colors ${c.id === activeCycleId ? "bg-white shadow-sm" : "hover:bg-gray-200/70"}`}>
+                {renaming === c.id ? (
+                  <input
+                    autoFocus value={renameVal}
+                    onChange={e => setRenameVal(e.target.value)}
+                    onBlur={() => commitRename(c.id)}
+                    onKeyDown={e => { if (e.key === "Enter") commitRename(c.id); if (e.key === "Escape") setRenaming(null); }}
+                    className="px-3 py-1.5 text-sm font-medium w-28 focus:outline-none bg-transparent"
+                  />
+                ) : (
+                  <button
+                    onClick={() => onSelect(c.id)}
+                    onDoubleClick={() => c.id === activeCycleId && startRename(c)}
+                    title={c.id === activeCycleId ? "Double-click to rename" : ""}
+                    className={`px-3 py-1.5 text-sm font-medium select-none ${c.id === activeCycleId ? "text-gray-900" : "text-gray-500"}`}
+                  >{c.name}</button>
+                )}
+                {c.id === activeCycleId && cycles.length > 1 && renaming !== c.id && (
+                  <button
+                    onClick={e => { e.stopPropagation(); onDelete(c.id); }}
+                    className="pr-2 -ml-1 text-gray-300 hover:text-red-400 text-sm leading-none transition-colors"
+                    title="Delete cycle"
+                  >×</button>
+                )}
+              </div>
+            ))}
+          </div>
+          {creating ? (
+            <input
+              autoFocus value={newName}
+              onChange={e => setNewName(e.target.value)}
+              onBlur={commitCreate}
+              onKeyDown={e => { if (e.key === "Enter") commitCreate(); if (e.key === "Escape") setCreating(false); }}
+              placeholder="Cycle name…"
+              className="text-sm px-3 py-1.5 border border-blue-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-300 w-36"
+            />
+          ) : (
+            <button
+              onClick={startCreate}
+              className="px-3 py-1.5 text-sm font-medium text-blue-600 hover:bg-blue-50 rounded-lg border border-blue-200 transition-colors"
+            >+ New Cycle</button>
+          )}
+        </div>
+      );
+    }
+
     // ─── BarRow ───────────────────────────────────────────────────────────────────
     function BarRow({ label, amount, total, color }) {
       const pct = total > 0 ? (amount / total) * 100 : 0;
@@ -576,35 +651,117 @@
 
     // ─── Expenses Tab ─────────────────────────────────────────────────────────────
     function ExpensesTab({ user }) {
-      const [rows, setRows]             = useState([]);
-      const [loadedFiles, setLoadedFiles] = useState([]);
-      const [settings, setSettings]     = useState({ tags: DEFAULT_TAGS, subCats: DEFAULT_SUBS });
-      const [loading, setLoading]       = useState(true);
-      const [filter, setFilter]         = useState("");
-      const [tagFilter, setTagFilter]   = useState("All");
-      const [subFilter, setSubFilter]   = useState("All");
-      const [cardFilter, setCardFilter] = useState("All");
-      const [showManage, setShowManage] = useState(false);
-      const [showUpload, setShowUpload] = useState(false);
+      const [cycles, setCycles]               = useState([]);
+      const [activeCycleId, setActiveCycleId] = useState(null);
+      const [rows, setRows]                   = useState([]);
+      const [loadedFiles, setLoadedFiles]     = useState([]);
+      const [settings, setSettings]           = useState({ tags: DEFAULT_TAGS, subCats: DEFAULT_SUBS });
+      const [loading, setLoading]             = useState(true);
+      const [rowsLoading, setRowsLoading]     = useState(false);
+      const [filter, setFilter]               = useState("");
+      const [tagFilter, setTagFilter]         = useState("All");
+      const [subFilter, setSubFilter]         = useState("All");
+      const [cardFilter, setCardFilter]       = useState("All");
+      const [showManage, setShowManage]       = useState(false);
+      const [showUpload, setShowUpload]       = useState(false);
 
       const uid = user.id;
 
-      // Load all data from Supabase on mount
+      // ── Initial load: cycles + settings ──────────────────────────────────────
       useEffect(() => {
-        Promise.all([
-          sb.from("transactions").select("*").eq("user_id", uid),
-          sb.from("loaded_files").select("*").eq("user_id", uid),
-          sb.from("settings").select("*").eq("user_id", uid).maybeSingle(),
-        ]).then(([txRes, filesRes, settingsRes]) => {
-          if (txRes.data)      setRows(txRes.data);
-          if (filesRes.data)   setLoadedFiles(filesRes.data.map(f => ({ name: f.name, cardId: f.card_id })));
-          if (settingsRes.data) setSettings({ tags: settingsRes.data.tags, subCats: settingsRes.data.sub_cats });
+        async function init() {
+          const [cyclesRes, settingsRes] = await Promise.all([
+            sb.from("cycles").select("*").eq("user_id", uid).order("created_at"),
+            sb.from("settings").select("*").eq("user_id", uid).maybeSingle(),
+          ]);
+
+          if (settingsRes.data) {
+            setSettings({ tags: settingsRes.data.tags, subCats: settingsRes.data.sub_cats });
+          }
+
+          let loadedCycles = cyclesRes.data || [];
+
+          if (loadedCycles.length === 0) {
+            // Check for orphaned transactions from before cycles were introduced
+            const { data: orphanTx } = await sb.from("transactions")
+              .select("id").eq("user_id", uid).is("cycle_id", null).limit(1);
+
+            if (orphanTx && orphanTx.length > 0) {
+              // Migrate existing data into a "Default" cycle
+              const { data: defaultCycle } = await sb.from("cycles")
+                .insert({ user_id: uid, name: "Default" }).select().single();
+              if (defaultCycle) {
+                await sb.from("transactions").update({ cycle_id: defaultCycle.id })
+                  .eq("user_id", uid).is("cycle_id", null);
+                await sb.from("loaded_files").update({ cycle_id: defaultCycle.id })
+                  .eq("user_id", uid).is("cycle_id", null);
+                loadedCycles = [defaultCycle];
+              }
+            } else {
+              // Fresh start — auto-create the first cycle named after current month
+              const now = new Date();
+              const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+              const { data: firstCycle } = await sb.from("cycles")
+                .insert({ user_id: uid, name: `${months[now.getMonth()]} ${now.getFullYear()}` })
+                .select().single();
+              if (firstCycle) loadedCycles = [firstCycle];
+            }
+          }
+
+          setCycles(loadedCycles);
+          setActiveCycleId(loadedCycles[loadedCycles.length - 1]?.id || null);
           setLoading(false);
-        });
+        }
+        init();
       }, [uid]);
+
+      // ── Load transactions + files when active cycle changes ───────────────────
+      useEffect(() => {
+        if (!activeCycleId) return;
+        setRowsLoading(true);
+        setRows([]);
+        setLoadedFiles([]);
+        setFilter("");
+        setTagFilter("All");
+        setSubFilter("All");
+        setCardFilter("All");
+        Promise.all([
+          sb.from("transactions").select("*").eq("user_id", uid).eq("cycle_id", activeCycleId),
+          sb.from("loaded_files").select("*").eq("user_id", uid).eq("cycle_id", activeCycleId),
+        ]).then(([txRes, filesRes]) => {
+          setRows(txRes.data || []);
+          setLoadedFiles((filesRes.data || []).map(f => ({ name: f.name, cardId: f.card_id })));
+          setRowsLoading(false);
+        });
+      }, [activeCycleId, uid]);
 
       const { tags, subCats } = settings;
 
+      // ── Cycle management ──────────────────────────────────────────────────────
+      const createCycle = useCallback(async (name) => {
+        const { data } = await sb.from("cycles").insert({ user_id: uid, name }).select().single();
+        if (data) { setCycles(prev => [...prev, data]); setActiveCycleId(data.id); }
+      }, [uid]);
+
+      const renameCycle = useCallback(async (cycleId, newName) => {
+        setCycles(prev => prev.map(c => c.id === cycleId ? { ...c, name: newName } : c));
+        await sb.from("cycles").update({ name: newName }).eq("id", cycleId).eq("user_id", uid);
+      }, [uid]);
+
+      const deleteCycle = useCallback(async (cycleId) => {
+        const cycle = cycles.find(c => c.id === cycleId);
+        if (!confirm(`Delete cycle "${cycle?.name}" and all its transactions?`)) return;
+        await sb.from("transactions").delete().eq("user_id", uid).eq("cycle_id", cycleId);
+        await sb.from("loaded_files").delete().eq("user_id", uid).eq("cycle_id", cycleId);
+        await sb.from("cycles").delete().eq("id", cycleId).eq("user_id", uid);
+        const remaining = cycles.filter(c => c.id !== cycleId);
+        setCycles(remaining);
+        if (activeCycleId === cycleId) {
+          setActiveCycleId(remaining[remaining.length - 1]?.id || null);
+        }
+      }, [cycles, activeCycleId, uid]);
+
+      // ── Transactions ──────────────────────────────────────────────────────────
       const handleLoad = useCallback(async (newRows, files) => {
         const existingIds = new Set(rows.map(r => r.id));
         const brandNew = newRows.filter(r => !existingIds.has(r.id));
@@ -615,16 +772,16 @@
         });
         if (brandNew.length > 0) {
           await sb.from("transactions").insert(
-            brandNew.map(r => ({ id: r.id, user_id: uid, date: r.date, description: r.description, amount: r.amount, card: r.card, tag: r.tag, sub: r.sub }))
+            brandNew.map(r => ({ id: r.id, user_id: uid, cycle_id: activeCycleId, date: r.date, description: r.description, amount: r.amount, card: r.card, tag: r.tag, sub: r.sub }))
           );
         }
         if (files.length > 0) {
           await sb.from("loaded_files").upsert(
-            files.map(f => ({ user_id: uid, name: f.name, card_id: f.cardId })),
-            { onConflict: "user_id,name" }
+            files.map(f => ({ user_id: uid, cycle_id: activeCycleId, name: f.name, card_id: f.cardId })),
+            { onConflict: "user_id,cycle_id,name" }
           );
         }
-      }, [rows, uid]);
+      }, [rows, uid, activeCycleId]);
 
       const updateRow = useCallback((updated) => {
         setRows(prev => prev.map(r => r.id === updated.id ? updated : r));
@@ -638,7 +795,7 @@
 
       const removeFile = (name) => {
         setLoadedFiles(prev => prev.filter(f => f.name !== name));
-        sb.from("loaded_files").delete().eq("user_id", uid).eq("name", name);
+        sb.from("loaded_files").delete().eq("user_id", uid).eq("cycle_id", activeCycleId).eq("name", name);
       };
 
       const handleSaveSettings = async (newTags, newSubs) => {
@@ -654,6 +811,7 @@
       };
 
       const exportCSV = () => {
+        const cycleName = cycles.find(c => c.id === activeCycleId)?.name || "cycle";
         const header = "Date,Description,Amount,Card,Tag,SubCategory\n";
         const body = rows.map(r =>
           `"${r.date}","${r.description.replace(/"/g,'""')}",${r.amount},"${r.card}","${r.tag}","${r.sub}"`
@@ -661,15 +819,16 @@
         const blob = new Blob([header + body], { type: "text/csv" });
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
-        a.href = url; a.download = "categorized-expenses.csv"; a.click();
+        a.href = url; a.download = `expenses-${cycleName.toLowerCase().replace(/\s+/g,"-")}.csv`; a.click();
         URL.revokeObjectURL(url);
       };
 
-      const clearAll = async () => {
-        if (confirm("Clear all transactions and loaded files?")) {
+      const clearCycle = async () => {
+        const cycleName = cycles.find(c => c.id === activeCycleId)?.name || "this cycle";
+        if (confirm(`Clear all transactions in "${cycleName}"?`)) {
           setRows([]); setLoadedFiles([]);
-          await sb.from("transactions").delete().eq("user_id", uid);
-          await sb.from("loaded_files").delete().eq("user_id", uid);
+          await sb.from("transactions").delete().eq("user_id", uid).eq("cycle_id", activeCycleId);
+          await sb.from("loaded_files").delete().eq("user_id", uid).eq("cycle_id", activeCycleId);
         }
       };
 
@@ -698,7 +857,7 @@
           {showManage && <ManageModal tags={tags} subCats={subCats} onClose={() => setShowManage(false)} onSave={handleSaveSettings} />}
           {showUpload && <UploadModal tags={tags} subCats={subCats} onClose={() => setShowUpload(false)} onLoad={handleLoad} />}
 
-          <div className="mb-6 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="mb-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div>
               <h1 className="text-2xl font-bold text-gray-900">Household Expense Tracker</h1>
               <p className="text-sm text-gray-500 mt-0.5">{rows.length} transactions across {activeCards.length || 0} card{activeCards.length !== 1 ? "s" : ""}</p>
@@ -708,10 +867,19 @@
               <button onClick={() => setShowManage(true)} className="px-4 py-2 bg-gray-100 text-gray-700 text-sm font-medium rounded-xl hover:bg-gray-200 transition-colors">⚙ Categories</button>
               {rows.length > 0 && <>
                 <button onClick={exportCSV} className="px-4 py-2 bg-gray-100 text-gray-700 text-sm font-medium rounded-xl hover:bg-gray-200 transition-colors">Export CSV</button>
-                <button onClick={clearAll} className="px-4 py-2 bg-gray-100 text-gray-600 text-sm font-medium rounded-xl hover:bg-gray-200 transition-colors">Clear All</button>
+                <button onClick={clearCycle} className="px-4 py-2 bg-gray-100 text-gray-600 text-sm font-medium rounded-xl hover:bg-gray-200 transition-colors">Clear Cycle</button>
               </>}
             </div>
           </div>
+
+          <CycleSwitcher
+            cycles={cycles}
+            activeCycleId={activeCycleId}
+            onSelect={setActiveCycleId}
+            onRename={renameCycle}
+            onDelete={deleteCycle}
+            onNew={createCycle}
+          />
 
           {loadedFiles.length > 0 && (
             <div className="flex flex-wrap gap-2 mb-5">
@@ -728,66 +896,74 @@
             </div>
           )}
 
-          {rows.length === 0 && (
-            <div onClick={() => setShowUpload(true)} className="mb-6 border-2 border-dashed border-gray-200 bg-white rounded-2xl p-12 text-center cursor-pointer hover:border-blue-300 transition-colors">
-              <div className="text-5xl mb-3">📂</div>
-              <p className="text-gray-500 font-medium">Upload your credit card statements to get started</p>
-              <p className="text-xs text-gray-400 mt-1">Supports Neo Financial, Wealthsimple, TD First Class, TD Cash Back</p>
+          {rowsLoading ? (
+            <div className="flex items-center justify-center h-40">
+              <div className="text-gray-400 text-sm animate-pulse">Loading…</div>
             </div>
-          )}
-
-          {rows.length > 0 && (
+          ) : (
             <>
-              <Dashboard rows={rows} tags={tags} subCats={subCats} />
-              <div className="bg-white rounded-2xl border border-gray-100 shadow-sm px-4 py-3 mb-4 space-y-2.5">
-                <input type="text" placeholder="Search transactions…" value={filter} onChange={e => setFilter(e.target.value)}
-                  className="w-full px-4 py-2 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-300" />
-                {activeCards.length > 1 && (
-                  <div className="flex gap-1.5 flex-wrap items-center">
-                    <span className="text-xs text-gray-400 font-medium w-16 shrink-0">Card</span>
-                    {["All", ...activeCards].map(c => {
-                      const profile = CARD_PROFILES.find(p => p.id === c);
-                      return <button key={c} onClick={() => setCardFilter(c)} className={`px-3 py-1 rounded-lg text-xs font-medium transition-colors ${cardFilter === c ? "bg-gray-800 text-white" : "bg-gray-100 text-gray-600 hover:bg-gray-200"}`}>{c === "All" ? "All" : profile?.label || c}</button>;
-                    })}
+              {rows.length === 0 && (
+                <div onClick={() => setShowUpload(true)} className="mb-6 border-2 border-dashed border-gray-200 bg-white rounded-2xl p-12 text-center cursor-pointer hover:border-blue-300 transition-colors">
+                  <div className="text-5xl mb-3">📂</div>
+                  <p className="text-gray-500 font-medium">Upload your credit card statements to get started</p>
+                  <p className="text-xs text-gray-400 mt-1">Supports Neo Financial, Wealthsimple, TD First Class, TD Cash Back</p>
+                </div>
+              )}
+
+              {rows.length > 0 && (
+                <>
+                  <Dashboard rows={rows} tags={tags} subCats={subCats} />
+                  <div className="bg-white rounded-2xl border border-gray-100 shadow-sm px-4 py-3 mb-4 space-y-2.5">
+                    <input type="text" placeholder="Search transactions…" value={filter} onChange={e => setFilter(e.target.value)}
+                      className="w-full px-4 py-2 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-300" />
+                    {activeCards.length > 1 && (
+                      <div className="flex gap-1.5 flex-wrap items-center">
+                        <span className="text-xs text-gray-400 font-medium w-16 shrink-0">Card</span>
+                        {["All", ...activeCards].map(c => {
+                          const profile = CARD_PROFILES.find(p => p.id === c);
+                          return <button key={c} onClick={() => setCardFilter(c)} className={`px-3 py-1 rounded-lg text-xs font-medium transition-colors ${cardFilter === c ? "bg-gray-800 text-white" : "bg-gray-100 text-gray-600 hover:bg-gray-200"}`}>{c === "All" ? "All" : profile?.label || c}</button>;
+                        })}
+                      </div>
+                    )}
+                    <div className="flex gap-1.5 flex-wrap items-center">
+                      <span className="text-xs text-gray-400 font-medium w-16 shrink-0">Tag</span>
+                      {["All", ...tags].map(t => <button key={t} onClick={() => setTagFilter(t)} className={`px-3 py-1 rounded-lg text-xs font-medium transition-colors ${tagFilter === t ? "bg-blue-600 text-white" : "bg-gray-100 text-gray-600 hover:bg-gray-200"}`}>{t}</button>)}
+                    </div>
+                    <div className="flex gap-1.5 flex-wrap items-center">
+                      <span className="text-xs text-gray-400 font-medium w-16 shrink-0">Sub</span>
+                      {["All", ...subCats].map(s => <button key={s} onClick={() => setSubFilter(s)} className={`px-3 py-1 rounded-lg text-xs font-medium transition-colors ${subFilter === s ? "bg-violet-600 text-white" : "bg-gray-100 text-gray-600 hover:bg-gray-200"}`}>{s}</button>)}
+                    </div>
                   </div>
-                )}
-                <div className="flex gap-1.5 flex-wrap items-center">
-                  <span className="text-xs text-gray-400 font-medium w-16 shrink-0">Tag</span>
-                  {["All", ...tags].map(t => <button key={t} onClick={() => setTagFilter(t)} className={`px-3 py-1 rounded-lg text-xs font-medium transition-colors ${tagFilter === t ? "bg-blue-600 text-white" : "bg-gray-100 text-gray-600 hover:bg-gray-200"}`}>{t}</button>)}
-                </div>
-                <div className="flex gap-1.5 flex-wrap items-center">
-                  <span className="text-xs text-gray-400 font-medium w-16 shrink-0">Sub</span>
-                  {["All", ...subCats].map(s => <button key={s} onClick={() => setSubFilter(s)} className={`px-3 py-1 rounded-lg text-xs font-medium transition-colors ${subFilter === s ? "bg-violet-600 text-white" : "bg-gray-100 text-gray-600 hover:bg-gray-200"}`}>{s}</button>)}
-                </div>
-              </div>
-              <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
-                <div className="overflow-x-auto">
-                  <table className="w-full">
-                    <thead>
-                      <tr className="bg-gray-50 border-b border-gray-100">
-                        <th className="py-3 px-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Date</th>
-                        <th className="py-3 px-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Description</th>
-                        <th className="py-3 px-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">Amount</th>
-                        <th className="py-3 px-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Card</th>
-                        <th className="py-3 px-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Tag</th>
-                        <th className="py-3 px-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Sub-Category</th>
-                        <th className="py-3 px-3 w-8" />
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {filtered.length === 0
-                        ? <tr><td colSpan={7} className="py-10 text-center text-gray-400 text-sm">No transactions match your filter.</td></tr>
-                        : filtered.map(r => <TransactionRow key={r.id} row={r} onChange={updateRow} onRemove={removeRow} tags={tags} subCats={subCats} />)
-                      }
-                    </tbody>
-                  </table>
-                </div>
-                {filtered.length > 0 && (
-                  <div className="px-3 py-2 border-t border-gray-50 text-xs text-gray-400 text-right">
-                    Showing {filtered.length} of {rows.length} · Total: <span className="font-semibold text-gray-600">${filtered.reduce((s,r)=>s+r.amount,0).toFixed(2)}</span>
+                  <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+                    <div className="overflow-x-auto">
+                      <table className="w-full">
+                        <thead>
+                          <tr className="bg-gray-50 border-b border-gray-100">
+                            <th className="py-3 px-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Date</th>
+                            <th className="py-3 px-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Description</th>
+                            <th className="py-3 px-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">Amount</th>
+                            <th className="py-3 px-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Card</th>
+                            <th className="py-3 px-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Tag</th>
+                            <th className="py-3 px-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Sub-Category</th>
+                            <th className="py-3 px-3 w-8" />
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {filtered.length === 0
+                            ? <tr><td colSpan={7} className="py-10 text-center text-gray-400 text-sm">No transactions match your filter.</td></tr>
+                            : filtered.map(r => <TransactionRow key={r.id} row={r} onChange={updateRow} onRemove={removeRow} tags={tags} subCats={subCats} />)
+                          }
+                        </tbody>
+                      </table>
+                    </div>
+                    {filtered.length > 0 && (
+                      <div className="px-3 py-2 border-t border-gray-50 text-xs text-gray-400 text-right">
+                        Showing {filtered.length} of {rows.length} · Total: <span className="font-semibold text-gray-600">${filtered.reduce((s,r)=>s+r.amount,0).toFixed(2)}</span>
+                      </div>
+                    )}
                   </div>
-                )}
-              </div>
+                </>
+              )}
             </>
           )}
         </div>
