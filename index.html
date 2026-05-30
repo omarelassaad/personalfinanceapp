@@ -1640,7 +1640,13 @@
           const { data: membership, error: memErr } = await sb.from("household_members")
             .select("household_id").eq("user_id", user.id).maybeSingle();
 
-          if (memErr) { setSetupError(true); return; }
+          if (memErr) {
+            // Only show setup screen if the table doesn't exist yet
+            const missing = memErr.code === "42P01" ||
+              (memErr.message && memErr.message.includes("does not exist"));
+            if (missing) { setSetupError(true); return; }
+            // For any other error (permissions, network) fall through and try to create
+          }
 
           if (membership) {
             setHouseholdId(membership.household_id);

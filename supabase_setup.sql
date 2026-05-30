@@ -2,6 +2,12 @@
 -- Safe to re-run: uses IF NOT EXISTS and drops policies before recreating.
 -- Run the entire file in Supabase SQL Editor.
 
+-- ─── 0. Grants (ensure authenticated role can access all tables) ─────────────
+grant usage on schema public to authenticated, anon;
+grant all on all tables    in schema public to authenticated;
+grant all on all sequences in schema public to authenticated;
+grant execute on all functions in schema public to authenticated;
+
 -- ─── 1. Base tables (no dependencies) ────────────────────────────────────────
 
 create table if not exists public.households (
