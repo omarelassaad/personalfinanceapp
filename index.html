@@ -26,6 +26,71 @@
       "Recreation", "Shopping", "Accommodation", "Fuel", "Pharmacy", "Other"
     ];
 
+    // Known card profiles — used to auto-detect which card a file belongs to
+    // and to normalise their different CSV column layouts
+    const CARD_PROFILES = [
+      {
+        id: "neo",
+        label: "Neo Financial",
+        color: "bg-violet-100 text-violet-800",
+        dot: "bg-violet-500",
+        // Neo: Date, Description, Amount  (negative = spend)
+        detect: (headers) => headers.some(h => h.includes("neo") || h.includes("rewards")),
+        dateCol:   ["date"],
+        descCol:   ["description","merchant"],
+        amountCol: ["amount"],
+        debitIsNegative: true,
+      },
+      {
+        id: "ws",
+        label: "Wealthsimple",
+        color: "bg-emerald-100 text-emerald-800",
+        dot: "bg-emerald-500",
+        detect: (headers) => headers.some(h => h.includes("wealthsimple") || h.includes("account type")),
+        dateCol:   ["date","transactiondate"],
+        descCol:   ["description","merchant name","payee"],
+        amountCol: ["amount","debit"],
+        debitIsNegative: false,
+      },
+      {
+        id: "td-first",
+        label: "TD First Class",
+        color: "bg-green-100 text-green-800",
+        dot: "bg-green-500",
+        detect: (headers) => headers.some(h => h.includes("td") || h.includes("first class")),
+        dateCol:   ["date","transaction date"],
+        descCol:   ["description","transaction description"],
+        amountCol: ["debit","amount","withdrawals"],
+        debitIsNegative: false,
+      },
+      {
+        id: "td-cash",
+        label: "TD Cash Back",
+        color: "bg-red-100 text-red-800",
+        dot: "bg-red-500",
+        detect: (headers) => false, // fallthrough — user picks manually
+        dateCol:   ["date","transaction date"],
+        descCol:   ["description","transaction description"],
+        amountCol: ["debit","amount","withdrawals"],
+        debitIsNegative: false,
+      },
+      {
+        id: "generic",
+        label: "Other / Generic",
+        color: "bg-gray-100 text-gray-700",
+        dot: "bg-gray-400",
+        detect: () => true,
+        dateCol:   ["date","transactiondate","trans.date"],
+        descCol:   ["description","merchant","name","details","payee"],
+        amountCol: ["amount","debit","credit","transactionamount"],
+        debitIsNegative: false,
+      },
+    ];
+
+    const CARD_COLORS = {};
+    const CARD_DOTS   = {};
+    CARD_PROFILES.forEach(p => { CARD_COLORS[p.id] = p.color; CARD_DOTS[p.id] = p.dot; });
+
     const KEYWORD_RULES = [
       { keywords: ["tim horton","zaatar","zythos","edo ","kfc","shanghai","mongolie","keg ","purdys","kernels","cows","pizza","donair","beach","grill","restaurant","bistro","cafe","sushi","burger","mcdonald","subway","wendy","starbucks"], sub: "Dining" },
       { keywords: ["costco","safeway","freshco","wal-mart","walmart","save on","save-on","grocery","superstore","whole foods","t&t","loblaws"], sub: "Groceries" },
@@ -48,19 +113,16 @@
       return subCats[subCats.length - 1] || "Other";
     }
 
-    const STORAGE_KEY = "expense-tracker-v1";
-    const SETTINGS_KEY = "expense-tracker-settings-v1";
+    const STORAGE_KEY    = "expense-tracker-v2";
+    const SETTINGS_KEY   = "expense-tracker-settings-v1";
+    const LOADED_FILES_KEY = "expense-tracker-files-v1";
 
     // ─── Color palettes ───────────────────────────────────────────────────────────
     const TAG_COLOR_PALETTE = [
-      "bg-blue-100 text-blue-800",
-      "bg-purple-100 text-purple-800",
-      "bg-green-100 text-green-800",
-      "bg-amber-100 text-amber-800",
-      "bg-rose-100 text-rose-800",
-      "bg-cyan-100 text-cyan-800",
-      "bg-indigo-100 text-indigo-800",
-      "bg-orange-100 text-orange-800",
+      "bg-blue-100 text-blue-800","bg-purple-100 text-purple-800",
+      "bg-green-100 text-green-800","bg-amber-100 text-amber-800",
+      "bg-rose-100 text-rose-800","bg-cyan-100 text-cyan-800",
+      "bg-indigo-100 text-indigo-800","bg-orange-100 text-orange-800",
       "bg-gray-100 text-gray-700",
     ];
     const BAR_COLOR_PALETTE = [
@@ -73,36 +135,64 @@
       "bg-pink-400","bg-fuchsia-400","bg-red-400","bg-teal-400","bg-gray-400",
     ];
 
-    // ─── CSV Parsing ──────────────────────────────────────────────────────────────
-    function parseCSV(text, tags, subCats) {
+    // ─── CSV Parser ───────────────────────────────────────────────────────────────
+    function splitLine(line, delim) {
+      const result = []; let cur = ""; let inQuote = false;
+      for (let i = 0; i < line.length; i++) {
+        const ch = line[i];
+        if (ch === '"') { inQuote = !inQuote; continue; }
+        if (ch === delim && !inQuote) { result.push(cur.trim()); cur = ""; continue; }
+        cur += ch;
+      }
+      result.push(cur.trim()); return result;
+    }
+
+    function pickCol(row, candidates) {
+      for (const c of candidates) {
+        const key = c.toLowerCase().replace(/\s+/g,"");
+        if (row[key] !== undefined && row[key] !== "") return row[key];
+      }
+      return "";
+    }
+
+    function detectProfile(headers) {
+      for (const p of CARD_PROFILES) {
+        if (p.detect(headers)) return p;
+      }
+      return CARD_PROFILES[CARD_PROFILES.length - 1];
+    }
+
+    function parseCSV(text, cardId, tags, subCats) {
       const lines = text.trim().split(/\r?\n/);
       if (lines.length < 2) return [];
       const delim = lines[0].includes("\t") ? "\t" : ",";
-      const splitLine = (line) => {
-        const result = []; let cur = ""; let inQuote = false;
-        for (let i = 0; i < line.length; i++) {
-          const ch = line[i];
-          if (ch === '"') { inQuote = !inQuote; continue; }
-          if (ch === delim && !inQuote) { result.push(cur.trim()); cur = ""; continue; }
-          cur += ch;
-        }
-        result.push(cur.trim()); return result;
-      };
-      const headers = splitLine(lines[0]).map(h => h.toLowerCase().replace(/\s+/g, ""));
+      const rawHeaders = splitLine(lines[0], delim);
+      const headers = rawHeaders.map(h => h.toLowerCase().replace(/\s+/g,""));
+
+      // Determine profile: use provided cardId, or auto-detect
+      const profile = cardId
+        ? CARD_PROFILES.find(p => p.id === cardId) || detectProfile(headers)
+        : detectProfile(headers);
+
       const rows = [];
       for (let i = 1; i < lines.length; i++) {
         if (!lines[i].trim()) continue;
-        const cols = splitLine(lines[i]);
+        const cols = splitLine(lines[i], delim);
         const row = {};
         headers.forEach((h, idx) => { row[h] = cols[idx] || ""; });
-        const date = row["date"] || row["transactiondate"] || row["trans.date"] || "";
-        const desc = row["description"] || row["merchant"] || row["name"] || row["details"] || "";
-        const amtRaw = row["amount"] || row["debit"] || row["credit"] || row["transactionamount"] || "";
-        const amt = parseFloat(amtRaw.replace(/[$,\s]/g, "")) || 0;
+
+        const date    = pickCol(row, profile.dateCol);
+        const desc    = pickCol(row, profile.descCol);
+        const amtRaw  = pickCol(row, profile.amountCol);
+        let   amt     = parseFloat(amtRaw.replace(/[$,\s]/g, "")) || 0;
+        if (profile.debitIsNegative) amt = Math.abs(amt);
+        if (amt <= 0) continue; // skip credits / payments
         if (!desc && !amt) continue;
+
         rows.push({
-          id: `${i}-${date}-${desc}`,
-          date, description: desc, amount: Math.abs(amt),
+          id: `${profile.id}-${i}-${date}-${desc}`,
+          date, description: desc, amount: amt,
+          card: profile.id,
           tag: tags[0] || "Common",
           sub: autoCategory(desc, subCats),
         });
@@ -116,33 +206,18 @@
       const [localSubs, setLocalSubs] = useState([...subCats]);
       const [newTag, setNewTag] = useState("");
       const [newSub, setNewSub] = useState("");
-      const tagInputRef = useRef(null);
-      const subInputRef = useRef(null);
+      const tagRef = useRef(null);
+      const subRef = useRef(null);
 
       const addTag = () => {
         const v = newTag.trim();
         if (!v || localTags.includes(v)) return;
-        setLocalTags(prev => [...prev, v]);
-        setNewTag("");
-        tagInputRef.current?.focus();
+        setLocalTags(p => [...p, v]); setNewTag(""); tagRef.current?.focus();
       };
-
       const addSub = () => {
         const v = newSub.trim();
         if (!v || localSubs.includes(v)) return;
-        setLocalSubs(prev => [...prev, v]);
-        setNewSub("");
-        subInputRef.current?.focus();
-      };
-
-      const removeTag = (t) => {
-        if (localTags.length <= 1) return;
-        setLocalTags(prev => prev.filter(x => x !== t));
-      };
-
-      const removeSub = (s) => {
-        if (localSubs.length <= 1) return;
-        setLocalSubs(prev => prev.filter(x => x !== s));
+        setLocalSubs(p => [...p, v]); setNewSub(""); subRef.current?.focus();
       };
 
       return (
@@ -151,82 +226,137 @@
           <div className="relative bg-white rounded-2xl shadow-xl w-full max-w-lg max-h-[90vh] flex flex-col">
             <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
               <h2 className="text-lg font-semibold text-gray-900">Manage Categories</h2>
-              <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl leading-none">&times;</button>
+              <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl">&times;</button>
+            </div>
+            <div className="overflow-y-auto flex-1 px-6 py-5 space-y-6">
+              {[
+                { label: "Top-level Tags", items: localTags, setItems: setLocalTags, newVal: newTag, setNew: setNewTag, add: addTag, ref: tagRef, palette: TAG_COLOR_PALETTE },
+                { label: "Sub-Categories", items: localSubs, setItems: setLocalSubs, newVal: newSub, setNew: setNewSub, add: addSub, ref: subRef, palette: null },
+              ].map(({ label, items, setItems, newVal, setNew, add, ref, palette }) => (
+                <div key={label}>
+                  <h3 className="text-sm font-semibold text-gray-700 mb-2">{label}</h3>
+                  <div className="flex flex-wrap gap-2 mb-3">
+                    {items.map((t, i) => (
+                      <span key={t} className={`inline-flex items-center gap-1 px-3 py-1 rounded-full text-xs font-medium ${palette ? palette[i % palette.length] : "bg-gray-100 text-gray-700"}`}>
+                        {t}
+                        {items.length > 1 && (
+                          <button onClick={() => setItems(p => p.filter(x => x !== t))} className="ml-0.5 hover:opacity-60 font-bold">&times;</button>
+                        )}
+                      </span>
+                    ))}
+                  </div>
+                  <div className="flex gap-2">
+                    <input ref={ref} type="text" value={newVal} onChange={e => setNew(e.target.value)}
+                      onKeyDown={e => e.key === "Enter" && add()}
+                      placeholder={`New ${label.toLowerCase().replace("top-level ","")}…`}
+                      className="flex-1 text-sm px-3 py-2 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-300" />
+                    <button onClick={add} className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-xl hover:bg-blue-700">Add</button>
+                  </div>
+                </div>
+              ))}
+              <p className="text-xs text-gray-400">Removing a tag or sub-category reassigns affected transactions to the first remaining option.</p>
+            </div>
+            <div className="flex justify-end gap-2 px-6 py-4 border-t border-gray-100">
+              <button onClick={onClose} className="px-4 py-2 text-sm text-gray-600 bg-gray-100 rounded-xl hover:bg-gray-200">Cancel</button>
+              <button onClick={() => onSave(localTags, localSubs)} className="px-5 py-2 text-sm font-medium text-white bg-blue-600 rounded-xl hover:bg-blue-700">Save</button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // ─── Upload Modal ─────────────────────────────────────────────────────────────
+    function UploadModal({ onClose, onLoad, tags, subCats }) {
+      const [selectedCard, setSelectedCard] = useState("neo");
+      const [dragOver, setDragOver]         = useState(false);
+      const [pending, setPending]           = useState([]); // [{name, text, cardId}]
+
+      const readFiles = (files) => {
+        Array.from(files).forEach(file => {
+          const reader = new FileReader();
+          reader.onload = e => {
+            setPending(prev => {
+              // auto-detect card from headers
+              const lines = e.target.result.trim().split(/\r?\n/);
+              const delim = lines[0]?.includes("\t") ? "\t" : ",";
+              const headers = splitLine(lines[0] || "", delim).map(h => h.toLowerCase().replace(/\s+/g,""));
+              const detected = detectProfile(headers);
+              // Don't duplicate by filename
+              if (prev.find(p => p.name === file.name)) return prev;
+              return [...prev, { name: file.name, text: e.target.result, cardId: detected.id }];
+            });
+          };
+          reader.readAsText(file);
+        });
+      };
+
+      const handleDrop = e => { e.preventDefault(); setDragOver(false); readFiles(e.dataTransfer.files); };
+      const updateCardId = (name, cardId) => setPending(prev => prev.map(p => p.name === name ? { ...p, cardId } : p));
+      const remove = (name) => setPending(prev => prev.filter(p => p.name !== name));
+
+      const load = () => {
+        if (pending.length === 0) return;
+        let allRows = [];
+        pending.forEach(({ text, cardId }) => {
+          allRows = allRows.concat(parseCSV(text, cardId, tags, subCats));
+        });
+        onLoad(allRows, pending.map(p => ({ name: p.name, cardId: p.cardId })));
+        onClose();
+      };
+
+      return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onClose} />
+          <div className="relative bg-white rounded-2xl shadow-xl w-full max-w-xl flex flex-col max-h-[90vh]">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+              <h2 className="text-lg font-semibold text-gray-900">Upload Statements</h2>
+              <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl">&times;</button>
             </div>
 
-            <div className="overflow-y-auto flex-1 px-6 py-5 space-y-6">
-              {/* Tags */}
-              <div>
-                <h3 className="text-sm font-semibold text-gray-700 mb-2">Top-level Tags</h3>
-                <div className="flex flex-wrap gap-2 mb-3">
-                  {localTags.map((t, i) => (
-                    <span key={t} className={`inline-flex items-center gap-1 px-3 py-1 rounded-full text-xs font-medium ${TAG_COLOR_PALETTE[i % TAG_COLOR_PALETTE.length]}`}>
-                      {t}
-                      {localTags.length > 1 && (
-                        <button onClick={() => removeTag(t)} className="ml-0.5 hover:opacity-60 font-bold leading-none">&times;</button>
-                      )}
-                    </span>
-                  ))}
-                </div>
-                <div className="flex gap-2">
-                  <input
-                    ref={tagInputRef}
-                    type="text"
-                    value={newTag}
-                    onChange={e => setNewTag(e.target.value)}
-                    onKeyDown={e => e.key === "Enter" && addTag()}
-                    placeholder="New tag name…"
-                    className="flex-1 text-sm px-3 py-2 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-300"
-                  />
-                  <button onClick={addTag} className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-xl hover:bg-blue-700 transition-colors">
-                    Add
-                  </button>
-                </div>
+            <div className="flex-1 overflow-y-auto px-6 py-5 space-y-4">
+              {/* Drop zone */}
+              <div
+                onDragOver={e => { e.preventDefault(); setDragOver(true); }}
+                onDragLeave={() => setDragOver(false)}
+                onDrop={handleDrop}
+                onClick={() => document.getElementById("multiCsvInput").click()}
+                className={`border-2 border-dashed rounded-xl p-6 text-center cursor-pointer transition-colors ${dragOver ? "border-blue-400 bg-blue-50" : "border-gray-200 hover:border-blue-300"}`}
+              >
+                <input id="multiCsvInput" type="file" accept=".csv,.txt" multiple className="hidden"
+                  onChange={e => readFiles(e.target.files)} />
+                <div className="text-3xl mb-1">📂</div>
+                <p className="text-sm text-gray-500">Drop one or more CSV files, or click to browse</p>
+                <p className="text-xs text-gray-400 mt-0.5">You can upload all cards at once</p>
               </div>
 
-              {/* Sub-categories */}
-              <div>
-                <h3 className="text-sm font-semibold text-gray-700 mb-2">Sub-Categories</h3>
-                <div className="flex flex-wrap gap-2 mb-3">
-                  {localSubs.map((s, i) => (
-                    <span key={s} className="inline-flex items-center gap-1 px-3 py-1 rounded-full text-xs font-medium bg-gray-100 text-gray-700">
-                      {s}
-                      {localSubs.length > 1 && (
-                        <button onClick={() => removeSub(s)} className="ml-0.5 hover:opacity-60 font-bold leading-none">&times;</button>
-                      )}
-                    </span>
+              {/* Pending files list */}
+              {pending.length > 0 && (
+                <div className="space-y-2">
+                  {pending.map(({ name, cardId }) => (
+                    <div key={name} className="flex items-center gap-3 bg-gray-50 rounded-xl px-4 py-2.5">
+                      <span className="flex-1 text-sm text-gray-700 truncate">{name}</span>
+                      <select
+                        value={cardId}
+                        onChange={e => updateCardId(name, e.target.value)}
+                        className="text-xs rounded-lg px-2 py-1 bg-white border border-gray-200 text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-300"
+                      >
+                        {CARD_PROFILES.map(p => <option key={p.id} value={p.id}>{p.label}</option>)}
+                      </select>
+                      <button onClick={() => remove(name)} className="text-gray-400 hover:text-red-500 text-lg leading-none">&times;</button>
+                    </div>
                   ))}
                 </div>
-                <div className="flex gap-2">
-                  <input
-                    ref={subInputRef}
-                    type="text"
-                    value={newSub}
-                    onChange={e => setNewSub(e.target.value)}
-                    onKeyDown={e => e.key === "Enter" && addSub()}
-                    placeholder="New sub-category…"
-                    className="flex-1 text-sm px-3 py-2 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-300"
-                  />
-                  <button onClick={addSub} className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-xl hover:bg-blue-700 transition-colors">
-                    Add
-                  </button>
-                </div>
-              </div>
-
-              <p className="text-xs text-gray-400">
-                Removing a tag or sub-category reassigns affected transactions to the first remaining option.
-              </p>
+              )}
             </div>
 
             <div className="flex justify-end gap-2 px-6 py-4 border-t border-gray-100">
-              <button onClick={onClose} className="px-4 py-2 text-sm text-gray-600 bg-gray-100 rounded-xl hover:bg-gray-200 transition-colors">
-                Cancel
-              </button>
+              <button onClick={onClose} className="px-4 py-2 text-sm text-gray-600 bg-gray-100 rounded-xl hover:bg-gray-200">Cancel</button>
               <button
-                onClick={() => onSave(localTags, localSubs)}
-                className="px-5 py-2 text-sm font-medium text-white bg-blue-600 rounded-xl hover:bg-blue-700 transition-colors"
+                onClick={load}
+                disabled={pending.length === 0}
+                className="px-5 py-2 text-sm font-medium text-white bg-blue-600 rounded-xl hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed"
               >
-                Save
+                Import {pending.length > 0 ? `${pending.length} file${pending.length > 1 ? "s" : ""}` : ""}
               </button>
             </div>
           </div>
@@ -234,7 +364,7 @@
       );
     }
 
-    // ─── Bar Row ──────────────────────────────────────────────────────────────────
+    // ─── BarRow ───────────────────────────────────────────────────────────────────
     function BarRow({ label, amount, total, color }) {
       const pct = total > 0 ? (amount / total) * 100 : 0;
       return (
@@ -255,33 +385,39 @@
       const total = useMemo(() => rows.reduce((s, r) => s + r.amount, 0), [rows]);
 
       const byTag = useMemo(() => {
-        const m = {};
-        tags.forEach(t => { m[t] = 0; });
+        const m = {}; tags.forEach(t => { m[t] = 0; });
         rows.forEach(r => { m[r.tag] = (m[r.tag] || 0) + r.amount; });
         return m;
       }, [rows, tags]);
 
-      const splitTag = tags[0] || "Common";
+      const byCard = useMemo(() => {
+        const m = {};
+        rows.forEach(r => { m[r.card] = (m[r.card] || 0) + r.amount; });
+        return m;
+      }, [rows]);
+
+      const splitTag   = tags[0] || "Common";
       const commonRows = useMemo(() => rows.filter(r => r.tag === splitTag), [rows, splitTag]);
       const commonTotal = byTag[splitTag] || 0;
 
       const bySub = useMemo(() => {
-        const m = {};
-        subCats.forEach(s => { m[s] = 0; });
+        const m = {}; subCats.forEach(s => { m[s] = 0; });
         commonRows.forEach(r => { m[r.sub] = (m[r.sub] || 0) + r.amount; });
         return m;
       }, [commonRows, subCats]);
 
       const subEntries = subCats
         .map((s, i) => ({ label: s, amount: bySub[s] || 0, color: SUB_BAR_COLORS[i % SUB_BAR_COLORS.length] }))
-        .filter(e => e.amount > 0)
-        .sort((a, b) => b.amount - a.amount);
+        .filter(e => e.amount > 0).sort((a, b) => b.amount - a.amount);
 
       const perPerson = commonTotal / 2;
       if (rows.length === 0) return null;
 
+      const cardEntries = CARD_PROFILES.filter(p => byCard[p.id] > 0);
+
       return (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
+          {/* Tag summary */}
           <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-5 lg:col-span-2">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-lg font-semibold text-gray-800">Spending Summary</h2>
@@ -290,8 +426,18 @@
             {tags.filter(t => byTag[t] > 0).map((t, i) => (
               <BarRow key={t} label={t} amount={byTag[t]} total={total} color={BAR_COLOR_PALETTE[i % BAR_COLOR_PALETTE.length]} />
             ))}
+            {cardEntries.length > 1 && (
+              <>
+                <div className="border-t border-gray-100 my-3" />
+                <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">By Card</p>
+                {cardEntries.map(p => (
+                  <BarRow key={p.id} label={p.label} amount={byCard[p.id]} total={total} color={p.dot} />
+                ))}
+              </>
+            )}
           </div>
 
+          {/* 50/50 split */}
           <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-5 flex flex-col gap-3">
             <h2 className="text-lg font-semibold text-gray-800">50/50 Split</h2>
             <div className="flex-1 flex flex-col gap-2 justify-center">
@@ -311,13 +457,12 @@
             </div>
           </div>
 
+          {/* Sub-cat breakdown */}
           {subEntries.length > 0 && (
             <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-5 lg:col-span-3">
               <h2 className="text-lg font-semibold text-gray-800 mb-4">{splitTag} — by Sub-Category</h2>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-8">
-                {subEntries.map(e => (
-                  <BarRow key={e.label} label={e.label} amount={e.amount} total={commonTotal} color={e.color} />
-                ))}
+                {subEntries.map(e => <BarRow key={e.label} label={e.label} amount={e.amount} total={commonTotal} color={e.color} />)}
               </div>
             </div>
           )}
@@ -326,31 +471,36 @@
     }
 
     // ─── Transaction Row ──────────────────────────────────────────────────────────
-    function TransactionRow({ row, onChange, tags, subCats }) {
-      const tagIdx = tags.indexOf(row.tag);
+    function TransactionRow({ row, onChange, onRemove, tags, subCats }) {
+      const tagIdx   = tags.indexOf(row.tag);
       const tagColor = TAG_COLOR_PALETTE[tagIdx >= 0 ? tagIdx : TAG_COLOR_PALETTE.length - 1];
+      const cardProfile = CARD_PROFILES.find(p => p.id === row.card) || CARD_PROFILES[CARD_PROFILES.length - 1];
+
       return (
-        <tr className="border-b border-gray-50 hover:bg-gray-50 transition-colors">
+        <tr className="border-b border-gray-50 hover:bg-gray-50 transition-colors group">
           <td className="py-2.5 px-3 text-sm text-gray-500 whitespace-nowrap">{row.date}</td>
           <td className="py-2.5 px-3 text-sm text-gray-800 max-w-xs truncate" title={row.description}>{row.description}</td>
           <td className="py-2.5 px-3 text-sm font-medium text-gray-900 text-right whitespace-nowrap">${row.amount.toFixed(2)}</td>
+          <td className="py-2.5 px-3 whitespace-nowrap">
+            <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${cardProfile.color}`}>{cardProfile.label}</span>
+          </td>
           <td className="py-2.5 px-3">
-            <select
-              value={tags.includes(row.tag) ? row.tag : tags[0]}
+            <select value={tags.includes(row.tag) ? row.tag : tags[0]}
               onChange={e => onChange({ ...row, tag: e.target.value })}
-              className={`text-xs font-medium rounded-lg px-2 py-1 border-0 cursor-pointer focus:ring-2 focus:ring-blue-300 ${tagColor}`}
-            >
+              className={`text-xs font-medium rounded-lg px-2 py-1 border-0 cursor-pointer focus:ring-2 focus:ring-blue-300 ${tagColor}`}>
               {tags.map(t => <option key={t} value={t}>{t}</option>)}
             </select>
           </td>
           <td className="py-2.5 px-3">
-            <select
-              value={subCats.includes(row.sub) ? row.sub : subCats[0]}
+            <select value={subCats.includes(row.sub) ? row.sub : subCats[0]}
               onChange={e => onChange({ ...row, sub: e.target.value })}
-              className="text-xs rounded-lg px-2 py-1 bg-gray-100 text-gray-700 border-0 cursor-pointer focus:ring-2 focus:ring-blue-300"
-            >
+              className="text-xs rounded-lg px-2 py-1 bg-gray-100 text-gray-700 border-0 cursor-pointer focus:ring-2 focus:ring-blue-300">
               {subCats.map(s => <option key={s} value={s}>{s}</option>)}
             </select>
+          </td>
+          <td className="py-2.5 px-3">
+            <button onClick={() => onRemove(row.id)}
+              className="opacity-0 group-hover:opacity-100 text-gray-300 hover:text-red-400 transition-all text-base leading-none">✕</button>
           </td>
         </tr>
       );
@@ -361,7 +511,9 @@
       const [rows, setRows] = useState(() => {
         try { return JSON.parse(localStorage.getItem(STORAGE_KEY)) || []; } catch { return []; }
       });
-
+      const [loadedFiles, setLoadedFiles] = useState(() => {
+        try { return JSON.parse(localStorage.getItem(LOADED_FILES_KEY)) || []; } catch { return []; }
+      });
       const [settings, setSettings] = useState(() => {
         try {
           const s = JSON.parse(localStorage.getItem(SETTINGS_KEY));
@@ -371,45 +523,44 @@
 
       const { tags, subCats } = settings;
 
-      const [filter, setFilter] = useState("");
-      const [tagFilter, setTagFilter] = useState("All");
-      const [dragOver, setDragOver] = useState(false);
-      const [fileName, setFileName] = useState("");
+      const [filter, setFilter]         = useState("");
+      const [tagFilter, setTagFilter]   = useState("All");
+      const [cardFilter, setCardFilter] = useState("All");
       const [showManage, setShowManage] = useState(false);
+      const [showUpload, setShowUpload] = useState(false);
 
       useEffect(() => { localStorage.setItem(STORAGE_KEY, JSON.stringify(rows)); }, [rows]);
+      useEffect(() => { localStorage.setItem(LOADED_FILES_KEY, JSON.stringify(loadedFiles)); }, [loadedFiles]);
       useEffect(() => { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); }, [settings]);
 
-      const handleFile = useCallback((file) => {
-        if (!file) return;
-        setFileName(file.name);
-        const reader = new FileReader();
-        reader.onload = (e) => {
-          const parsed = parseCSV(e.target.result, tags, subCats);
-          if (parsed.length === 0) {
-            alert("No transactions found. Make sure the CSV has Date, Description, and Amount columns.");
-            return;
-          }
-          setRows(prev => {
-            const existingMap = {};
-            prev.forEach(r => { existingMap[r.id] = r; });
-            return parsed.map(r => existingMap[r.id] || r);
+      const handleLoad = useCallback((newRows, files) => {
+        setRows(prev => {
+          const map = {};
+          prev.forEach(r => { map[r.id] = r; });
+          // Merge new, preserving existing categorisations
+          const merged = [...prev];
+          newRows.forEach(r => {
+            if (map[r.id]) return; // already exists
+            merged.push(r);
           });
-        };
-        reader.readAsText(file);
-      }, [tags, subCats]);
-
-      const handleDrop = (e) => {
-        e.preventDefault(); setDragOver(false); handleFile(e.dataTransfer.files[0]);
-      };
-
-      const updateRow = useCallback((updated) => {
-        setRows(prev => prev.map(r => r.id === updated.id ? updated : r));
+          return merged;
+        });
+        setLoadedFiles(prev => {
+          const names = new Set(prev.map(f => f.name));
+          return [...prev, ...files.filter(f => !names.has(f.name))];
+        });
       }, []);
+
+      const updateRow  = useCallback((updated) => setRows(prev => prev.map(r => r.id === updated.id ? updated : r)), []);
+      const removeRow  = useCallback((id) => setRows(prev => prev.filter(r => r.id !== id)), []);
+      const removeFile = (name) => {
+        setLoadedFiles(prev => prev.filter(f => f.name !== name));
+        // Optionally remove rows from that file (matching prefix)
+        // We don't track file→row mapping so just leave rows; user can clear manually
+      };
 
       const handleSaveSettings = (newTags, newSubs) => {
         setSettings({ tags: newTags, subCats: newSubs });
-        // Fix any rows whose tag/sub no longer exist
         setRows(prev => prev.map(r => ({
           ...r,
           tag: newTags.includes(r.tag) ? r.tag : newTags[0],
@@ -420,9 +571,9 @@
       };
 
       const exportCSV = () => {
-        const header = "Date,Description,Amount,Tag,SubCategory\n";
+        const header = "Date,Description,Amount,Card,Tag,SubCategory\n";
         const body = rows.map(r =>
-          `"${r.date}","${r.description.replace(/"/g,'""')}",${r.amount},"${r.tag}","${r.sub}"`
+          `"${r.date}","${r.description.replace(/"/g,'""')}",${r.amount},"${r.card}","${r.tag}","${r.sub}"`
         ).join("\n");
         const blob = new Blob([header + body], { type: "text/csv" });
         const url = URL.createObjectURL(blob);
@@ -432,72 +583,80 @@
       };
 
       const clearAll = () => {
-        if (confirm("Clear all transactions? This cannot be undone.")) { setRows([]); setFileName(""); }
+        if (confirm("Clear all transactions and loaded files?")) { setRows([]); setLoadedFiles([]); }
       };
+
+      const activeCards = useMemo(() => [...new Set(rows.map(r => r.card))], [rows]);
 
       const filtered = useMemo(() => {
         let r = rows;
-        if (tagFilter !== "All") r = r.filter(x => x.tag === tagFilter);
+        if (cardFilter !== "All") r = r.filter(x => x.card === cardFilter);
+        if (tagFilter  !== "All") r = r.filter(x => x.tag  === tagFilter);
         if (filter.trim()) {
           const q = filter.toLowerCase();
           r = r.filter(x => x.description.toLowerCase().includes(q) || x.date.includes(q));
         }
         return r;
-      }, [rows, filter, tagFilter]);
+      }, [rows, filter, tagFilter, cardFilter]);
 
       return (
         <div className="min-h-screen p-4 md:p-8 max-w-7xl mx-auto">
-          {showManage && (
-            <ManageModal
-              tags={tags}
-              subCats={subCats}
-              onClose={() => setShowManage(false)}
-              onSave={handleSaveSettings}
-            />
-          )}
+          {showManage && <ManageModal tags={tags} subCats={subCats} onClose={() => setShowManage(false)} onSave={handleSaveSettings} />}
+          {showUpload && <UploadModal tags={tags} subCats={subCats} onClose={() => setShowUpload(false)} onLoad={handleLoad} />}
 
           {/* Header */}
           <div className="mb-6 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div>
               <h1 className="text-2xl font-bold text-gray-900">Household Expense Tracker</h1>
-              <p className="text-sm text-gray-500 mt-0.5">Neo World Elite Mastercard · {rows.length} transactions</p>
+              <p className="text-sm text-gray-500 mt-0.5">{rows.length} transactions across {activeCards.length || 0} card{activeCards.length !== 1 ? "s" : ""}</p>
             </div>
             <div className="flex gap-2 flex-wrap">
-              <button
-                onClick={() => setShowManage(true)}
-                className="px-4 py-2 bg-gray-100 text-gray-700 text-sm font-medium rounded-xl hover:bg-gray-200 transition-colors"
-              >
+              <button onClick={() => setShowUpload(true)} className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-xl hover:bg-blue-700 transition-colors">
+                + Upload Statements
+              </button>
+              <button onClick={() => setShowManage(true)} className="px-4 py-2 bg-gray-100 text-gray-700 text-sm font-medium rounded-xl hover:bg-gray-200 transition-colors">
                 ⚙ Categories
               </button>
               {rows.length > 0 && (
                 <>
-                  <button onClick={exportCSV} className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-xl hover:bg-blue-700 transition-colors">
+                  <button onClick={exportCSV} className="px-4 py-2 bg-gray-100 text-gray-700 text-sm font-medium rounded-xl hover:bg-gray-200 transition-colors">
                     Export CSV
                   </button>
                   <button onClick={clearAll} className="px-4 py-2 bg-gray-100 text-gray-600 text-sm font-medium rounded-xl hover:bg-gray-200 transition-colors">
-                    Clear
+                    Clear All
                   </button>
                 </>
               )}
             </div>
           </div>
 
-          {/* Upload zone */}
-          <div
-            onDragOver={e => { e.preventDefault(); setDragOver(true); }}
-            onDragLeave={() => setDragOver(false)}
-            onDrop={handleDrop}
-            className={`mb-6 border-2 border-dashed rounded-2xl p-8 text-center transition-colors cursor-pointer ${dragOver ? "border-blue-400 bg-blue-50" : "border-gray-200 bg-white hover:border-blue-300"}`}
-            onClick={() => document.getElementById("csvInput").click()}
-          >
-            <input id="csvInput" type="file" accept=".csv,.txt" className="hidden"
-              onChange={e => handleFile(e.target.files[0])} />
-            <div className="text-4xl mb-2">📂</div>
-            {fileName
-              ? <p className="text-gray-700 font-medium">{fileName} loaded</p>
-              : <p className="text-gray-500">Drop your CSV here, or click to browse</p>}
-            <p className="text-xs text-gray-400 mt-1">Expected columns: Date, Description, Amount</p>
-          </div>
+          {/* Loaded files chips */}
+          {loadedFiles.length > 0 && (
+            <div className="flex flex-wrap gap-2 mb-5">
+              {loadedFiles.map(f => {
+                const profile = CARD_PROFILES.find(p => p.id === f.cardId) || CARD_PROFILES[CARD_PROFILES.length - 1];
+                return (
+                  <span key={f.name} className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium ${profile.color}`}>
+                    <span className={`w-1.5 h-1.5 rounded-full ${profile.dot}`} />
+                    {f.name}
+                    <button onClick={() => removeFile(f.name)} className="ml-0.5 hover:opacity-60">&times;</button>
+                  </span>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Empty state */}
+          {rows.length === 0 && (
+            <div
+              onClick={() => setShowUpload(true)}
+              className="mb-6 border-2 border-dashed border-gray-200 bg-white rounded-2xl p-12 text-center cursor-pointer hover:border-blue-300 transition-colors"
+            >
+              <div className="text-5xl mb-3">📂</div>
+              <p className="text-gray-500 font-medium">Upload your credit card statements to get started</p>
+              <p className="text-xs text-gray-400 mt-1">Supports Neo Financial, Wealthsimple, TD First Class, TD Cash Back</p>
+            </div>
+          )}
 
           {rows.length > 0 && (
             <>
@@ -505,20 +664,29 @@
 
               {/* Filter bar */}
               <div className="flex flex-col sm:flex-row gap-3 mb-4">
-                <input
-                  type="text"
-                  placeholder="Search transactions…"
-                  value={filter}
+                <input type="text" placeholder="Search transactions…" value={filter}
                   onChange={e => setFilter(e.target.value)}
-                  className="flex-1 px-4 py-2 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-300"
-                />
-                <div className="flex gap-1.5 flex-wrap">
+                  className="flex-1 px-4 py-2 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-300" />
+                <div className="flex gap-1.5 flex-wrap items-center">
+                  {/* Card filter */}
+                  {activeCards.length > 1 && (
+                    <>
+                      {["All", ...activeCards].map(c => {
+                        const profile = CARD_PROFILES.find(p => p.id === c);
+                        return (
+                          <button key={c} onClick={() => setCardFilter(c)}
+                            className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${cardFilter === c ? "bg-gray-800 text-white" : "bg-gray-100 text-gray-600 hover:bg-gray-200"}`}>
+                            {c === "All" ? "All Cards" : profile?.label || c}
+                          </button>
+                        );
+                      })}
+                      <span className="text-gray-300 text-sm">|</span>
+                    </>
+                  )}
+                  {/* Tag filter */}
                   {["All", ...tags].map(t => (
-                    <button
-                      key={t}
-                      onClick={() => setTagFilter(t)}
-                      className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${tagFilter === t ? "bg-blue-600 text-white" : "bg-gray-100 text-gray-600 hover:bg-gray-200"}`}
-                    >
+                    <button key={t} onClick={() => setTagFilter(t)}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${tagFilter === t ? "bg-blue-600 text-white" : "bg-gray-100 text-gray-600 hover:bg-gray-200"}`}>
                       {t}
                     </button>
                   ))}
@@ -534,15 +702,17 @@
                         <th className="py-3 px-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Date</th>
                         <th className="py-3 px-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Description</th>
                         <th className="py-3 px-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wide">Amount</th>
+                        <th className="py-3 px-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Card</th>
                         <th className="py-3 px-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Tag</th>
                         <th className="py-3 px-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Sub-Category</th>
+                        <th className="py-3 px-3 w-8" />
                       </tr>
                     </thead>
                     <tbody>
                       {filtered.length === 0
-                        ? <tr><td colSpan={5} className="py-10 text-center text-gray-400 text-sm">No transactions match your filter.</td></tr>
+                        ? <tr><td colSpan={7} className="py-10 text-center text-gray-400 text-sm">No transactions match your filter.</td></tr>
                         : filtered.map(r => (
-                          <TransactionRow key={r.id} row={r} onChange={updateRow} tags={tags} subCats={subCats} />
+                          <TransactionRow key={r.id} row={r} onChange={updateRow} onRemove={removeRow} tags={tags} subCats={subCats} />
                         ))
                       }
                     </tbody>
@@ -550,7 +720,7 @@
                 </div>
                 {filtered.length > 0 && (
                   <div className="px-3 py-2 border-t border-gray-50 text-xs text-gray-400 text-right">
-                    Showing {filtered.length} of {rows.length} transactions ·{" "}
+                    Showing {filtered.length} of {rows.length} ·{" "}
                     Total: <span className="font-semibold text-gray-600">${filtered.reduce((s,r)=>s+r.amount,0).toFixed(2)}</span>
                   </div>
                 )}
