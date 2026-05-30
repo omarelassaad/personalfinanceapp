@@ -35,9 +35,9 @@
         color: "bg-violet-100 text-violet-800",
         dot: "bg-violet-500",
         // Neo: Date, Description, Amount  (negative = spend)
-        detect: (headers) => headers.some(h => h.includes("neo") || h.includes("rewards")),
-        dateCol:   ["date"],
-        descCol:   ["description","merchant"],
+        detect: (headers) => headers.includes("status") && headers.some(h => h.includes("posteddate") || h.includes("posted")),
+        dateCol:   ["transactiondate","transaction_date","date"],
+        descCol:   ["description","merchant","details"],
         amountCol: ["amount"],
         debitIsNegative: true,
       },
