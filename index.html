@@ -1617,6 +1617,7 @@
       const [user, setUser]               = useState(null);
       const [householdId, setHouseholdId] = useState(null);
       const [authLoading, setAuthLoading] = useState(true);
+      const [setupError, setSetupError]   = useState(false);
       const [tab, setTab]                 = useState("expenses");
       const [showHousehold, setShowHousehold] = useState(false);
 
@@ -1627,7 +1628,7 @@
         });
         const { data: { subscription } } = sb.auth.onAuthStateChange((_, session) => {
           setUser(session?.user ?? null);
-          if (!session) setHouseholdId(null);
+          if (!session) { setHouseholdId(null); setSetupError(false); }
         });
         return () => subscription.unsubscribe();
       }, []);
@@ -1636,28 +1637,57 @@
       useEffect(() => {
         if (!user) return;
         async function initHousehold() {
-          const { data: membership } = await sb.from("household_members")
+          const { data: membership, error: memErr } = await sb.from("household_members")
             .select("household_id").eq("user_id", user.id).maybeSingle();
+
+          if (memErr) { setSetupError(true); return; }
 
           if (membership) {
             setHouseholdId(membership.household_id);
-          } else {
-            const { data: hh } = await sb.from("households")
-              .insert({ name: "My Household" }).select().single();
-            if (hh) {
-              await sb.from("household_members").insert({
-                user_id: user.id, household_id: hh.id, role: "owner"
-              });
-              setHouseholdId(hh.id);
-            }
+            return;
+          }
+
+          const { data: hh, error: hhErr } = await sb.from("households")
+            .insert({ name: "My Household" }).select().single();
+
+          if (hhErr) { setSetupError(true); return; }
+
+          if (hh) {
+            await sb.from("household_members").insert({
+              user_id: user.id, household_id: hh.id, role: "owner"
+            });
+            setHouseholdId(hh.id);
           }
         }
         initHousehold();
       }, [user]);
 
-      if (authLoading || (user && !householdId)) return (
+      if (authLoading) return (
         <div className="min-h-screen flex items-center justify-center">
           <div className="text-gray-400 text-sm animate-pulse">Loading…</div>
+        </div>
+      );
+
+      if (!user) return <LoginScreen />;
+
+      if (setupError) return (
+        <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
+          <div className="bg-white rounded-2xl shadow-xl border border-orange-100 p-8 max-w-sm w-full text-center">
+            <div className="text-4xl mb-4">🛠️</div>
+            <h2 className="text-lg font-bold text-gray-900 mb-2">Database setup required</h2>
+            <p className="text-sm text-gray-500 mb-1">Run <span className="font-mono bg-gray-100 px-1 rounded">supabase_setup.sql</span> in your</p>
+            <p className="text-sm text-gray-500 mb-5">Supabase SQL Editor to apply the latest schema.</p>
+            <button onClick={() => sb.auth.signOut()}
+              className="text-xs text-gray-400 hover:text-gray-600 underline">
+              Sign out
+            </button>
+          </div>
+        </div>
+      );
+
+      if (user && !householdId) return (
+        <div className="min-h-screen flex items-center justify-center">
+          <div className="text-gray-400 text-sm animate-pulse">Setting up household…</div>
         </div>
       );
 
